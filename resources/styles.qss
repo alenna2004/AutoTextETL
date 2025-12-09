@@ -1,0 +1,84 @@
+/* AutoTextETL Application Styles */
+QMainWindow {
+    background-color: #f0f0f0;
+}
+
+QTabWidget::pane {
+    border: 1px solid #c0c0c0;
+    background-color: #ffffff;
+}
+
+QTabBar::tab {
+    background-color: #e0e0e0;
+    border: 1px solid #c0c0c0;
+    padding: 8px 16px;
+    margin-right: -1px;
+}
+
+QTabBar::tab:selected {
+    background-color: #ffffff;
+    border-bottom-color: #ffffff;
+}
+
+QTabBar::tab:hover {
+    background-color: #f0f0f0;
+}
+
+QPushButton {
+    background-color: #f0f0f0;
+    border: 1px solid #c0c0c0;
+    padding: 5px 15px;
+    border-radius: 3px;
+}
+
+QPushButton:hover {
+    background-color: #e0e0e0;
+}
+
+QPushButton:pressed {
+    background-color: #d0d0d0;
+}
+
+QPushButton#runButton {
+    background-color: #4CAF50;
+    color: white;
+    font-weight: bold;
+}
+
+QPushButton#stopButton {
+    background-color: #f44336;
+    color: white;
+    font-weight: bold;
+}
+
+QLineEdit, QTextEdit, QTreeWidget, QTableWidget {
+    border: 1px solid #c0c0c0;
+    padding: 2px;
+}
+
+QTextEdit {
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 10pt;
+}
+
+QStatusBar {
+    background-color: #2c3e50;
+    color: white;
+}
+
+QMenuBar {
+    background-color: #34495e;
+    color: white;
+}
+
+QMenuBar::item {
+    background: transparent;
+}
+
+QMenuBar::item:selected {
+    background: #3498db;
+}
+
+QMenuBar::item:pressed {
+    background: #2980b9;
+}

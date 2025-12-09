@@ -1,0 +1,51 @@
+{
+    "app": {
+        "name": "AutoTextETL",
+        "version": "1.0.0",
+        "debug_mode": false,
+        "locale": "en_US"
+    },
+    "database": {
+        "path": "unified_storage.sqlite",
+        "backup_dir": "./backups/",
+        "auto_backup": true,
+        "backup_interval_hours": 24
+    },
+    "processing": {
+        "default_max_workers": 4,
+        "chunk_size_mb": 50,
+        "timeout_seconds": 300,
+        "memory_limit_mb": 1024
+    },
+    "logging": {
+        "level": "INFO",
+        "file_path": "./logs/app.log",
+        "max_file_size_mb": 100,
+        "backup_count": 5
+    },
+    "exporters": {
+        "default_format": "sqlite",
+        "json_compression": true,
+        "batch_size": 1000,
+        "retry_attempts": 3
+    },
+    "security": {
+        "script_timeout_seconds": 60,
+        "script_memory_limit_mb": 200,
+        "encryption_enabled": true,
+        "sandbox_enabled": true
+    },
+    "ui": {
+        "window_width": 1400,
+        "window_height": 900,
+        "theme": "dark",
+        "font_family": "Segoe UI",
+        "font_size": 10
+    },
+    "scheduler": {
+        "enabled": true,
+        "max_concurrent_jobs": 2,
+        "job_timeout_minutes": 60,
+        "cleanup_interval_days": 30
+    }
+}

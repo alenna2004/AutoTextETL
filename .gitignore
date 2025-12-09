@@ -1,0 +1,109 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.vs
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+.env/
+.envs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Database
+*.sqlite
+*.db
+*.sqlitedb
+
+# Logs
+*.log
+logs/
+log/
+
+# Temp files
+temp/
+tmp/
+*.tmp
+*.temp
+
+# Output files
+output/
+backups/
+*.bak
+*.backup
+
+# Configuration (if sensitive)
+config/secrets.json
+config/passwords.json
+
+# Coverage reports
+.coverage
+htmlcov/
+
+# PyTest
+.pytest_cache/
+
+# PyCharm
+*.iml
+*.iws
+*.ipr
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Distribution / packaging
+.Python
+env/
+venv/
+ENV/
+include/
+lib/
+lib64/
+parts/
+sdist/
+develop-eggs/
+.installed.cfg
+*.egg
+
+# PyMuPDF temp files
+*.pdf
+*.docx
+
+
+# Windows
+[C-c]ache/
+[N-n]o[T-t]rack/
