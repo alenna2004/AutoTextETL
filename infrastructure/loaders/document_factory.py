@@ -1,22 +1,18 @@
 ﻿from typing import Dict, Type, Union
 from domain.interfaces import IDocumentLoader
-import importlib
 
 class DocumentFactory:
     """
     Factory for creating document loaders
     """
-    _loaders: Dict[str, str] = {}  # Store module.class strings, not actual classes
+    _loaders: Dict[str, Type[IDocumentLoader]] = {}
     
     @classmethod
-    def register_loader(cls, format: str, module_class_path: str):
+    def register_loader(cls, format: str, loader_class: Type[IDocumentLoader]):
         """
         Register a new loader for a format
-        Args:
-            format: Format name (e.g., 'pdf', 'docx', 'txt')
-            module_class_path: Full path to class (e.g., 'infrastructure.loaders.pdf_loader.PdfLoader')
         """
-        cls._loaders[format.lower()] = module_class_path
+        cls._loaders[format.lower()] = loader_class
     
     @classmethod
     def create_loader(cls, path: str) -> IDocumentLoader:
@@ -33,11 +29,7 @@ class DocumentFactory:
             supported = ", ".join(cls._loaders.keys())
             raise ValueError(f"Unsupported format: {ext}. Supported: {supported}")
         
-        # Import the class dynamically to avoid circular imports
-        module_path, class_name = cls._loaders[ext].rsplit('.', 1)
-        module = importlib.import_module(module_path)
-        loader_class = getattr(module, class_name)
-        
+        loader_class = cls._loaders[ext]
         return loader_class()
     
     @classmethod
@@ -45,9 +37,14 @@ class DocumentFactory:
         """
         Register all available loaders
         """
-        cls.register_loader("pdf", "infrastructure.loaders.pdf_loader.PdfLoader")
-        cls.register_loader("docx", "infrastructure.loaders.docx.docx_loader.DocxLoader")  # ← CORRECT PATH
-        cls.register_loader("txt", "infrastructure.loaders.txt_loader.TxtLoader")
+        # Import here to avoid circular imports
+        from .pdf_loader import PdfLoader
+        from .docx.docx_loader import DocxLoader  # ← Correct import path
+        from .txt_loader import TxtLoader
+        
+        cls.register_loader("pdf", PdfLoader)
+        cls.register_loader("docx", DocxLoader)  # ← Use "docx" as format
+        cls.register_loader("txt", TxtLoader)
     
     @classmethod
     def get_supported_formats(cls) -> list:

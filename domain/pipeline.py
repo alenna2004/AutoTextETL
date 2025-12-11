@@ -4,14 +4,6 @@ from enum import Enum
 from uuid import uuid4
 from datetime import datetime
 
-class PipelineStatus(Enum):
-    """Pipeline execution status"""
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    PARTIAL_SUCCESS = "partial_success"
-    PAUSED = "paused"
 
 class StepType(Enum):
     """Pipeline step types"""
@@ -23,6 +15,23 @@ class StepType(Enum):
     REGEX_EXTRACTOR = "regex_extractor"
     USER_SCRIPT = "user_script"
     DB_EXPORTER = "db_exporter"
+    FILE_EXPORTER = "file_exporter"
+    JSON_EXPORTER = "json_exporter"
+    WEB_LOADER = "web_loader"
+    TEXT_FILTER = "text_filter"
+    METADATA_PROPAGATOR = "metadata_propagator"
+    CUSTOM_PROCESSOR = "custom_processor"
+
+class PipelineStatus(Enum):
+    """Pipeline execution status"""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PARTIAL_SUCCESS = "partial_success"
+    PAUSED = "paused"
+
+
 
 @dataclass
 class PipelineStepConfig:

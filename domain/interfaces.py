@@ -2,8 +2,8 @@
 from typing import List, Dict, Any, Optional, Union
 from .document import Document
 from .chunk import Chunk
-from .pipeline import PipelineConfig, PipelineRun
-from .enums import LogLevel  # ← Import from separate file
+from .pipeline import PipelineConfig, PipelineRun, PipelineStatus
+from .enums import LogLevel  # ← Add missing import
 
 class IDocumentLoader(ABC):
     """
@@ -276,7 +276,7 @@ class ILogger(ABC):
             pipeline_id: Associated pipeline ID
             pipeline_run_id: Associated run ID
             document_path: Associated document path
-            extra_data Additional context
+            extra_data: Additional context
         """
         pass
     

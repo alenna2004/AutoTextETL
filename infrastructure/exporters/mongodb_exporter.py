@@ -1,14 +1,13 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 MongoDB Exporter - Export chunks to MongoDB database
 """
 
 from typing import List, Dict, Any, Optional
-from domain.interfaces import IDbExporter
+from domain.interfaces import IDbExporter  # ← Fixed import path
 from domain.document import Document, Section
 from domain.chunk import Chunk, Metadata, ChunkType
 from domain.pipeline import PipelineRun, PipelineStatus
-import pymongo
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, DuplicateKeyError
 import json
@@ -172,7 +171,7 @@ class MongoDbExporter(IDbExporter):
                 upsert=True  # Insert if doesn't exist, update if exists
             )
         except Exception as e:
-            raise RuntimeError(f"Failed to export run metadata: {str(e)}")
+            raise RuntimeError(f"Failed to export run meta {str(e)}")
     
     def close(self):
         """
@@ -275,11 +274,13 @@ class MongoDbExporter(IDbExporter):
         cursor = collection.find(query).limit(limit)
         return list(cursor)
     
-    def delete_chunks_by_document(self, document_id: str):
+    def delete_chunks_by_document(self, document_id: str) -> int:
         """
         Delete all chunks for a specific document
         Args:
             document_id: Document ID to delete chunks for
+        Returns:
+            int: Number of deleted documents
         """
         if not self.is_connected:
             raise RuntimeError("Database not connected")

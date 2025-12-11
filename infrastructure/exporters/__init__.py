@@ -1,8 +1,12 @@
 ﻿"""
 Database exporters implementations
 """
-# Don't import classes here to avoid circular imports
-# Only define what's available
+from .target_db_exporter import TargetDbExporter, IDbExporter
+from .sqlite_exporter import SqliteExporter
+from .postgres_exporter import PostgresExporter
+from .mysql_exporter import MysqlExporter
+from .mongodb_exporter import MongoDbExporter
+from .json_exporter import JsonExporter
 
 __all__ = [
     'TargetDbExporter',
@@ -13,28 +17,3 @@ __all__ = [
     'MongoDbExporter',
     'JsonExporter'
 ]
-
-# Lazy loading function
-def get_exporter_class(format_name: str):
-    """
-    Get exporter class by format name (lazy loading to avoid circular imports)
-    """
-    format_lower = format_name.lower()
-    
-    if format_lower == "sqlite":
-        from .sqlite_exporter import SqliteExporter
-        return SqliteExporter
-    elif format_lower == "postgres":
-        from .postgres_exporter import PostgresExporter
-        return PostgresExporter
-    elif format_lower == "mysql":
-        from .mysql_exporter import MysqlExporter
-        return MysqlExporter
-    elif format_lower == "mongodb":
-        from .mongodb_exporter import MongoDbExporter
-        return MongoDbExporter
-    elif format_lower == "json":
-        from .json_exporter import JsonExporter
-        return JsonExporter
-    else:
-        raise ValueError(f"Unsupported format: {format_name}")

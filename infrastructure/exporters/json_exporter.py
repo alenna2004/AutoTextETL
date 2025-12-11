@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 JSON Exporter - Export chunks to JSON files
 """
@@ -7,7 +7,7 @@ import json
 import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from domain.interfaces import IDbExporter
+from domain.interfaces import IDbExporter  # ← Fixed import path
 from domain.document import Document, Section
 from domain.chunk import Chunk, Metadata, ChunkType
 from domain.pipeline import PipelineRun, PipelineStatus
@@ -111,7 +111,7 @@ class JsonExporter(IDbExporter):
         """
         Write JSON data to file (with optional compression)
         Args:
-            data: Data to write
+             Data to write
             file_path: Output file path
         """
         if self.compress:
@@ -130,7 +130,7 @@ class JsonExporter(IDbExporter):
         """
         if isinstance(obj, datetime):
             return obj.isoformat()
-        elif isinstance(obj, (Chunk, Metadata, Section, PipelineRun)):
+        elif hasattr(obj, '__dict__'):
             return obj.__dict__  # Convert domain objects to dict
         raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
     
@@ -189,7 +189,7 @@ class JsonExporter(IDbExporter):
     
     def export_batch_to_separate_files(self, chunks: List[Chunk], 
                                      base_filename: str = "batch", 
-                                     batch_size: int = 1000):
+                                     batch_size: int = 1000) -> List[str]:
         """
         Export chunks in batches to separate files
         Args:
