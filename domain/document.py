@@ -6,8 +6,8 @@ from enum import Enum
 
 # Import from domain layer only (no infrastructure imports!)
 from .chunk import Chunk, Metadata, ChunkType
-from .pipeline import PipelineConfig, PipelineRun, PipelineStatus, StepType  # ← Remove LogLevel import
-from .enums import LogLevel  # ← Import from enums module instead
+from .pipeline import PipelineConfig, PipelineRun, PipelineStatus, StepType  
+from .enums import LogLevel  
 
 class DocumentFormat(Enum):
     """Supported document formats"""

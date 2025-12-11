@@ -39,11 +39,11 @@ class DocumentFactory:
         """
         # Import here to avoid circular imports
         from .pdf_loader import PdfLoader
-        from .docx.docx_loader import DocxLoader  # ← Correct import path
+        from .docx.docx_loader import DocxLoader  
         from .txt_loader import TxtLoader
         
         cls.register_loader("pdf", PdfLoader)
-        cls.register_loader("docx", DocxLoader)  # ← Use "docx" as format
+        cls.register_loader("docx", DocxLoader)  
         cls.register_loader("txt", TxtLoader)
     
     @classmethod

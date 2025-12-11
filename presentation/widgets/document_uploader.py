@@ -110,7 +110,7 @@ class DocumentUploader(QWidget):
         self.analysis_worker = None
         self.selected_document_row = -1
         
-        # ✅ FIXED: Store full paths for all documents
+        # Store full paths for all documents
         self.document_paths: Dict[int, str] = {}  # row_index -> full_path
         
         self.setup_ui()
@@ -137,7 +137,7 @@ class DocumentUploader(QWidget):
         
         self.config_button = QPushButton("Configure Headers")
         self.config_button.clicked.connect(self.configure_header_detection)
-        # ✅ FIXED: Enable config button even without document analysis
+        # Enable config button even without document analysis
         self.config_button.setEnabled(True)
         controls_layout.addWidget(self.config_button)
         
@@ -180,7 +180,7 @@ class DocumentUploader(QWidget):
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
         
-        # ✅ FIXED: Add status bar to layout
+        # Add status bar to layout
         self.status_bar = QStatusBar()
         layout.addWidget(self.status_bar)
         
@@ -559,7 +559,7 @@ class DocumentUploader(QWidget):
         for i, path in enumerate(file_paths):
             row = current_row + i
             abs_path = os.path.abspath(path)  # Use absolute path
-            file_name = os.path.basename(path)  # ← FIXED: Define file_name here
+            file_name = os.path.basename(path)  
             
             # Store full path for this row
             self.document_paths[row] = abs_path
@@ -585,7 +585,7 @@ class DocumentUploader(QWidget):
         self.analyze_button.setEnabled(True)
         self.selected_document_row = 0  # Select first document
         
-        # ✅ FIXED: Update both status_bar and status_label
+        # Update both status_bar and status_label
         self.status_bar.showMessage(f"Added {len(file_paths)} documents to list")
         self.status_label.setText(f"Ready - {len(file_paths)} documents loaded")
     
@@ -600,7 +600,7 @@ class DocumentUploader(QWidget):
         # Enable analyze button
         self.analyze_button.setEnabled(True)
         
-        # ✅ FIXED: Update both status_bar and status_label
+        # Update both status_bar and status_label
         self.status_bar.showMessage(f"Selected: {file_name}")
         self.status_label.setText(f"Selected: {file_name}")
         
@@ -629,7 +629,7 @@ class DocumentUploader(QWidget):
             return
         
         self.current_document_path = file_path
-        file_name = os.path.basename(file_path)  # ← FIXED: Define file_name here
+        file_name = os.path.basename(file_path)  
         
         # Start analysis in background thread
         self.analysis_worker = DocumentUploadWorker([file_path], self.pipeline_manager)
@@ -637,7 +637,7 @@ class DocumentUploader(QWidget):
         self.analysis_worker.result_signal.connect(self._on_analysis_complete)
         self.analysis_worker.error_signal.connect(self._on_analysis_error)
         
-        # ✅ FIXED: Show progress bar and update status
+        # Show progress bar and update status
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         self.status_bar.showMessage(f"Analyzing document: {file_name}")
@@ -650,7 +650,7 @@ class DocumentUploader(QWidget):
         Handle analysis progress update
         """
         self.progress_bar.setValue(progress)
-        # ✅ FIXED: Update both status_bar and status_label
+        # Update both status_bar and status_label
         self.status_bar.showMessage(message)
         self.status_label.setText(message)
     
@@ -688,7 +688,7 @@ class DocumentUploader(QWidget):
                     f"Found {result['style_count']} unique text styles in the document!"
                 )
                 
-                # ✅ FIXED: Update both status_bar and status_label
+                # Update both status_bar and status_label
                 self.status_bar.showMessage(f"Analysis complete: {result['style_count']} styles detected in {result['path']}")
                 self.status_label.setText(f"Analysis complete: {result['style_count']} styles detected")
             else:
@@ -698,7 +698,7 @@ class DocumentUploader(QWidget):
                     f"Failed to analyze document: {result.get('error', 'Unknown error')}"
                 )
                 
-                # ✅ FIXED: Update both status_bar and status_label
+                # Update both status_bar and status_label
                 self.status_bar.showMessage(f"Analysis failed: {result.get('error', 'Unknown error')}")
                 self.status_label.setText(f"Analysis failed: {result.get('error', 'Unknown error')}")
         
@@ -717,7 +717,7 @@ class DocumentUploader(QWidget):
             f"Failed to analyze document: {error}"
         )
         
-        # ✅ FIXED: Update both status_bar and status_label
+        # Update both status_bar and status_label
         self.status_bar.showMessage(f"Analysis failed: {error}")
         self.status_label.setText(f"Analysis failed: {error}")
         
@@ -787,7 +787,7 @@ class DocumentUploader(QWidget):
         # Enable save button after configuration
         self.save_config_button.setEnabled(True)
         
-        # ✅ FIXED: Update both status_bar and status_label
+        # Update both status_bar and status_label
         self.status_bar.showMessage("Header configuration ready")
         self.status_label.setText("Header configuration ready")
     
@@ -1212,7 +1212,7 @@ class DocumentUploader(QWidget):
                 self.current_header_config = config
                 self.save_config_button.setEnabled(False)  # Disable until changes are made
                 
-                # ✅ FIXED: Update both status_bar and status_label
+                #  Update both status_bar and status_label
                 self.status_bar.showMessage(f"Configuration saved: {config_path}")
                 self.status_label.setText(f"Configuration saved: {os.path.basename(config_path)}")
                 
@@ -1358,7 +1358,7 @@ class DocumentUploader(QWidget):
                 self.config_button.setEnabled(True)  # Still allow manual config
                 self.save_config_button.setEnabled(False)
             
-            # ✅ FIXED: Update both status_bar and status_label
+            # Update both status_bar and status_label
             self.status_bar.showMessage(f"Deleted {len(selected_rows)} documents")
             self.status_label.setText(f"Deleted {len(selected_rows)} documents")
     
@@ -1383,7 +1383,7 @@ class DocumentUploader(QWidget):
             self.selected_document_row = -1
             self.analyze_button.setEnabled(False)
             
-            # ✅ FIXED: Update both status_bar and status_label
+            #  Update both status_bar and status_label
             self.status_bar.showMessage("All documents cleared")
             self.status_label.setText("All documents cleared")
     
@@ -1404,6 +1404,6 @@ class DocumentUploader(QWidget):
         self.config_button.setEnabled(True)  # Keep config button enabled
         self.save_config_button.setEnabled(False)
         
-        # ✅ FIXED: Update both status_bar and status_label
+        # Update both status_bar and status_label
         self.status_bar.showMessage("Refreshed")
         self.status_label.setText("Ready")

@@ -98,7 +98,7 @@ class ScriptEditor(QWidget):
         controls_layout.addWidget(self.save_button)
         
         self.load_button = QPushButton("Load Script")
-        self.load_button.clicked.connect(self.load_selected_script)  # ← FIXED: Method now exists
+        self.load_button.clicked.connect(self.load_selected_script)  
         controls_layout.addWidget(self.load_button)
         
         self.test_button = QPushButton("Test Script")

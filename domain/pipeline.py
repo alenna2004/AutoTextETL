@@ -203,7 +203,7 @@ class PipelineRun:
     start_time: datetime = field(default_factory=datetime.now)
     end_time: Optional[datetime] = None
     status: PipelineStatus = PipelineStatus.PENDING
-    document_paths: List[str] = field(default_factory=list)  # ✅ FIXED: Correct parameter name
+    document_paths: List[str] = field(default_factory=list)  
     processed_count: int = 0
     success_count: int = 0
     error_count: int = 0
@@ -239,6 +239,6 @@ class PipelineRun:
             "processed_count": self.processed_count,
             "success_count": self.success_count,
             "error_count": self.error_count,
-            "error_count": len(self.errors),  # Fixed: duplicate field name
+            "error_count": len(self.errors),  
             "metadata": self.meta
         }

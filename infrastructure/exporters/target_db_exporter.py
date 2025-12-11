@@ -5,13 +5,13 @@ Target Database Exporter - Abstract base class for all database exporters
 
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Union
-from domain.interfaces import IDbExporter  # ← USE CORRECT INTERFACE PATH
+from domain.interfaces import IDbExporter    
 from domain.chunk import Chunk
 from domain.pipeline import PipelineRun, PipelineStatus
 import json
 from datetime import datetime
 
-class TargetDbExporter(IDbExporter):  # ← INHERIT FROM CORRECT INTERFACE
+class TargetDbExporter(IDbExporter): 
     """
     Abstract base class for all database exporters
     Provides common functionality for chunk insertion and metadata handling

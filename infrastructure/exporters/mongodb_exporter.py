@@ -4,7 +4,7 @@ MongoDB Exporter - Export chunks to MongoDB database
 """
 
 from typing import List, Dict, Any, Optional
-from domain.interfaces import IDbExporter  # ← Fixed import path
+from domain.interfaces import IDbExporter  
 from domain.document import Document, Section
 from domain.chunk import Chunk, Metadata, ChunkType
 from domain.pipeline import PipelineRun, PipelineStatus

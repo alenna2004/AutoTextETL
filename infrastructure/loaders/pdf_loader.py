@@ -1,7 +1,7 @@
 ﻿from typing import Dict, Any, Union, List, Optional
 from domain.interfaces import IDocumentLoader
 from domain.document import Document, Page, Section, DocumentFormat
-from .docx.docx_loader import DocxLoader  # Import the DOCX loader to use it
+from .docx.docx_loader import DocxLoader
 from infrastructure.processors.metadata_propagator import HeaderStyleDefinition, StyleBasedHeaderDetector
 from utilities.header_filter import HeaderFilter
 import fitz  # PyMuPDF

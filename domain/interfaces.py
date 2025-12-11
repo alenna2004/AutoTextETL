@@ -3,7 +3,7 @@ from typing import List, Dict, Any, Optional, Union
 from .document import Document
 from .chunk import Chunk
 from .pipeline import PipelineConfig, PipelineRun, PipelineStatus
-from .enums import LogLevel  # ← Add missing import
+from .enums import LogLevel  
 
 class IDocumentLoader(ABC):
     """

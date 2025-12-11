@@ -213,7 +213,7 @@ class VisualCanvasWidget(QWidget):
         # Clear all existing connections in steps
         for step in self.steps.values():
             step.input_step_id = None
-            # ✅ FIXED: Use getattr with default to safely handle missing attribute
+            # Use getattr with default to safely handle missing attribute
             if hasattr(step, 'output_steps'):
                 step.output_steps.clear()
             else:
@@ -1534,7 +1534,6 @@ class PipelineDesigner(QWidget):
     def save_pipeline(self):
         """
         Save current pipeline configuration
-        ✅ FIXED: Properly track pipeline ID
         """
         if not self.steps:
             QMessageBox.warning(self, "Warning", "No steps in pipeline")
@@ -1558,7 +1557,7 @@ class PipelineDesigner(QWidget):
             QMessageBox.critical(self, "Error", f"Validation failed: {str(e)}")
             return
     
-        # ✅ FIXED: Save using pipeline manager and update current pipeline ID
+        # Save using pipeline manager and update current pipeline ID
         try:
             if self.current_pipeline_id:
                 # Update existing pipeline

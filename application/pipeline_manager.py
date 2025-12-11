@@ -297,7 +297,7 @@ class PipelineManager:
             pipeline_id=pipeline_id,
             start_time=datetime.now(),
             status=PipelineStatus.RUNNING,
-            document_paths=valid_paths,  # ✅ FIXED: Correct parameter name
+            document_paths=valid_paths,  
             metadata=run_metadata or {}
         )
         
@@ -934,7 +934,7 @@ class PipelineManager:
                     type=StepType.DOCUMENT_LOADER,
                     name="Load Documents",
                     params={
-                        "document_paths": [],  # ✅ FIXED: Use correct parameter name
+                        "document_paths": [],  
                         "style_config_path": "",
                         "batch_size": 100,
                         "parallel_workers": 4

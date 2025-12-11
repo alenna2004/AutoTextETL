@@ -21,7 +21,7 @@ import fitz  # PyMuPDF
 
 # Import the filtering utility
 from .header_filter import HeaderFilter, ExactHeadingRule, ExactHeadingDetector
-from utilities.header_filter import HeaderFilter  # ← FIXED: Added import
+from utilities.header_filter import HeaderFilter  
 
 @dataclass
 class TextStyle:

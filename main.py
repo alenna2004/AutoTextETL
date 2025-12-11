@@ -62,8 +62,8 @@ def initialize_database(db_path: str = "unified_storage.sqlite"):
     
     try:
         db = UnifiedDatabase(db_path)
-        db.initialize_schema()  # ← FIXED: This method now exists
-        db.create_default_configs()  # ← FIXED: This method now exists
+        db.initialize_schema()  
+        db.create_default_configs() 
         return db
     except Exception as e:
         # Use simple print since Qt may not be initialized yet
