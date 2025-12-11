@@ -1,9 +1,18 @@
 ﻿from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Union, Callable
+from typing import List, Dict, Any, Optional
 from enum import Enum
-from uuid import uuid4
 from datetime import datetime
+import uuid
 
+class PipelineStatus(Enum):
+    """Pipeline execution status"""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PARTIAL_SUCCESS = "partial_success"
+    PAUSED = "paused"
+    CANCELLED = "cancelled"
 
 class StepType(Enum):
     """Pipeline step types"""
@@ -17,36 +26,15 @@ class StepType(Enum):
     DB_EXPORTER = "db_exporter"
     FILE_EXPORTER = "file_exporter"
     JSON_EXPORTER = "json_exporter"
-    WEB_LOADER = "web_loader"
-    TEXT_FILTER = "text_filter"
     METADATA_PROPAGATOR = "metadata_propagator"
-    CUSTOM_PROCESSOR = "custom_processor"
-
-class PipelineStatus(Enum):
-    """Pipeline execution status"""
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    PARTIAL_SUCCESS = "partial_success"
-    PAUSED = "paused"
-
-
 
 @dataclass
 class PipelineStepConfig:
     """
     Pipeline step configuration
-    Attributes:
-        id: Unique step identifier
-        type: Step type
-        name: Human-readable name
-        params: Step parameters
-        input_step_id: ID of previous step (None for first step)
-        depends_on: List of dependencies (alternative to input_step_id)
     """
     type: StepType  # Non-default argument first
-    id: str = field(default_factory=lambda: str(uuid4()))
+    id: str = field(default_factory=lambda: f"step_{str(uuid.uuid4())[:8]}")
     name: str = ""
     params: Dict[str, Any] = field(default_factory=dict)
     input_step_id: Optional[str] = None
@@ -62,22 +50,11 @@ class PipelineStepConfig:
 class PipelineConfig:
     """
     ETL pipeline configuration
-    Attributes:
-        id: Unique identifier
-        name: Pipeline name
-        description: Description
-        steps: List of steps
-        schedule: Schedule in cron format
-        source_config: Source configuration
-        target_config: Target database configuration
-        created_at: Creation date
-        updated_at: Last update date
-        version: Configuration version
     """
-    id: str = field(default_factory=lambda: str(uuid4()))
-    name: str = "New Pipeline"
-    description: str = ""
+    name: str
     steps: List[PipelineStepConfig] = field(default_factory=list)
+    id: str = field(default_factory=lambda: f"pipeline_{str(uuid.uuid4())[:8]}")
+    description: str = ""
     schedule: str = ""  # cron format: "0 2 * * *"
     source_config: Dict[str, Any] = field(default_factory=dict)
     target_config: Dict[str, Any] = field(default_factory=dict)
@@ -190,7 +167,6 @@ class PipelineConfig:
     def from_dict(cls, data: Dict[str, Any]) -> 'PipelineConfig':
         """Create configuration from dictionary"""
         config = cls(
-            id=data.get("id", str(uuid4())),
             name=data.get("name", "New Pipeline"),
             description=data.get("description", ""),
             schedule=data.get("schedule", ""),
@@ -199,11 +175,15 @@ class PipelineConfig:
             version=data.get("version", 1)
         )
         
+        # Restore ID if exists
+        if "id" in data:
+            config.id = data["id"]
+        
         # Restore steps
         for step_data in data.get("steps", []):
             step = PipelineStepConfig(
                 type=StepType(step_data["type"]),
-                id=step_data.get("id", str(uuid4())),
+                id=step_data.get("id", f"step_{str(uuid.uuid4())[:8]}"),
                 name=step_data.get("name", ""),
                 params=step_data.get("params", {}),
                 input_step_id=step_data.get("input_step_id"),
@@ -217,28 +197,18 @@ class PipelineConfig:
 class PipelineRun:
     """
     Pipeline execution instance
-    Attributes:
-        id: Unique run identifier
-        pipeline_id: Pipeline configuration ID
-        start_time: Start time
-        end_time: End time
-        status: Current status
-        processed_count: Number of processed documents
-        success_count: Number of successfully processed documents
-        error_count: Number of errors
-        errors: Error details
-        meta: Additional metadata
     """
-    id: str = field(default_factory=lambda: f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid4())[:8]}")
+    id: str = field(default_factory=lambda: f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}")
     pipeline_id: str = ""
     start_time: datetime = field(default_factory=datetime.now)
     end_time: Optional[datetime] = None
     status: PipelineStatus = PipelineStatus.PENDING
+    document_paths: List[str] = field(default_factory=list)  # ✅ FIXED: Correct parameter name
     processed_count: int = 0
     success_count: int = 0
     error_count: int = 0
     errors: List[Dict[str, Any]] = field(default_factory=list)
-    meta: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
     
     def complete(self, status: Optional[PipelineStatus] = None):
         """Complete pipeline execution"""
@@ -265,6 +235,7 @@ class PipelineRun:
             "start_time": self.start_time.isoformat(),
             "end_time": self.end_time.isoformat() if self.end_time else None,
             "status": self.status.value,
+            "document_paths": self.document_paths,
             "processed_count": self.processed_count,
             "success_count": self.success_count,
             "error_count": self.error_count,

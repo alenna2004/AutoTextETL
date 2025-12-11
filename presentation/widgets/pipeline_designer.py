@@ -6,28 +6,30 @@ Pipeline Designer - Visual pipeline construction with clear step configuration
 import sys
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Union
-from dataclasses import dataclass, field
+import os
+import json
+import tempfile
+from datetime import datetime
+import secrets
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, 
-                           QTreeWidgetItem, QPushButton, QLineEdit, QComboBox,
-                           QGroupBox, QFormLayout, QLabel, QSplitter, QTextEdit,
-                           QTableWidget, QTableWidgetItem, QHeaderView, QTabWidget,
-                           QMessageBox, QFrame, QScrollArea, QMenu, QMenuBar,
-                           QStatusBar, QToolBar, QListWidgetItem, QListWidget,
-                           QFileDialog, QScrollArea, QSpinBox, QCheckBox, QInputDialog)
-from PyQt6.QtCore import Qt, QPoint, QRect, QSize, pyqtSignal
-from PyQt6.QtGui import QPainter, QPen, QColor, QBrush, QFont, QAction, QKeySequence
-import json
+                           QTreeWidgetItem, QPushButton, QLineEdit, QLabel, QSplitter,
+                           QGroupBox, QFormLayout, QTableWidget, QTableWidgetItem,
+                           QHeaderView, QTabWidget, QMessageBox, QFileDialog,
+                           QProgressBar, QStatusBar, QMenuBar, QToolBar, 
+                           QInputDialog, QListWidget, QScrollArea, QSpinBox, QCheckBox,
+                           QComboBox, QTextEdit, QListWidgetItem)
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QRect
+from PyQt6.QtGui import QFont, QAction, QKeySequence, QIcon, QColor, QPen, QPainter
 import uuid
-from datetime import datetime
-
 from domain.chunk import Chunk, Metadata, ChunkType
 from domain.pipeline import PipelineConfig, PipelineStepConfig, PipelineRun, PipelineStatus, StepType
 from domain.interfaces import IDbExporter
+from infrastructure.loaders.document_factory import DocumentFactory
 
 class PipelineStepItem:
     """
@@ -39,10 +41,11 @@ class PipelineStepItem:
         self.name = name or f"{step_type.replace('_', ' ').title()} Step"
         self.params = params or {}
         self.input_step_id = None  # ID of previous step this connects to
-        self.output_steps = []     # List of step IDs this outputs to
+        self.depends_on = []       # Conditional dependencies
         self.position = (0, 0)     # Position in visual designer
         self.connected_inputs = [] # List of input connections
         self.connected_outputs = [] # List of output connections
+        self.output_steps = []     # Added missing attribute - list of output step IDs
 
 class VisualConnection:
     """
@@ -210,14 +213,24 @@ class VisualCanvasWidget(QWidget):
         # Clear all existing connections in steps
         for step in self.steps.values():
             step.input_step_id = None
-            step.output_steps.clear()
-        
+            # ✅ FIXED: Use getattr with default to safely handle missing attribute
+            if hasattr(step, 'output_steps'):
+                step.output_steps.clear()
+            else:
+                step.output_steps = []  # Create if missing
+    
         # Set up connections based on visual connections
         for conn in self.connections:
             if conn.from_step_id in self.steps and conn.to_step_id in self.steps:
                 from_step = self.steps[conn.from_step_id]
                 to_step = self.steps[conn.to_step_id]
-                
+            
+                # ✅ FIXED: Ensure output_steps exists
+                if not hasattr(from_step, 'output_steps'):
+                    from_step.output_steps = []
+                if not hasattr(to_step, 'output_steps'):
+                    to_step.output_steps = []
+            
                 from_step.output_steps.append(conn.to_step_id)
                 to_step.input_step_id = conn.from_step_id
     
@@ -434,6 +447,11 @@ class PipelineDesigner(QWidget):
         self.run_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
         controls_layout.addWidget(self.run_button)
         
+        self.results_button = QPushButton("View Results")
+        self.results_button.clicked.connect(self.view_pipeline_results)
+        self.results_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
+        controls_layout.addWidget(self.results_button)
+        
         self.clear_button = QPushButton("Clear")
         self.clear_button.clicked.connect(self.clear_pipeline)
         controls_layout.addWidget(self.clear_button)
@@ -442,23 +460,28 @@ class PipelineDesigner(QWidget):
         
         layout.addLayout(controls_layout)
         
-        # Main content with splitter
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Main content area with splitter
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
         
         # Left panel - Available steps
         left_panel = self._create_available_steps_panel()
-        splitter.addWidget(left_panel)
+        main_splitter.addWidget(left_panel)
         
         # Center panel - Visual canvas
         center_panel = self._create_visual_canvas()
-        splitter.addWidget(center_panel)
+        main_splitter.addWidget(center_panel)
         
         # Right panel - Step configuration
         right_panel = self._create_step_config_panel()
-        splitter.addWidget(right_panel)
+        main_splitter.addWidget(right_panel)
         
-        splitter.setSizes([250, 600, 350])
-        layout.addWidget(splitter)
+        main_splitter.setSizes([250, 600, 350])
+        layout.addWidget(main_splitter)
+        
+        # Results view tab (hidden initially)
+        self.results_tab = self._create_results_view_panel()
+        self.results_tab.setVisible(False)
+        layout.addWidget(self.results_tab)
         
         # Status bar
         self.status_bar = QStatusBar()
@@ -470,22 +493,22 @@ class PipelineDesigner(QWidget):
         """
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        
+    
         # Available steps group
         steps_group = QGroupBox("Available Steps")
         steps_layout = QVBoxLayout(steps_group)
-        
+    
         # Step categories with detailed descriptions
         self.steps_tree = QTreeWidget()
         self.steps_tree.setHeaderLabels(["Step Type", "Description"])
         self.steps_tree.setDragEnabled(True)
         self.steps_tree.setDropIndicatorShown(True)
         self.steps_tree.setDragDropMode(QTreeWidget.DragDropMode.DragOnly)
-        
+    
         # Add step categories with clear descriptions
         loader_category = QTreeWidgetItem(self.steps_tree, ["Document Loaders", "Load and analyze documents"])
         loader_category.addChild(QTreeWidgetItem(["document_loader", "Load PDF/TXT/DOCX files with style analysis"]))
-        
+    
         processor_category = QTreeWidgetItem(self.steps_tree, ["Processors", "Text processing operations"])
         processor_category.addChild(QTreeWidgetItem(["line_splitter", "Split text by lines"]))
         processor_category.addChild(QTreeWidgetItem(["delimiter_splitter", "Split by custom delimiter"]))
@@ -494,25 +517,25 @@ class PipelineDesigner(QWidget):
         processor_category.addChild(QTreeWidgetItem(["regex_extractor", "Extract with regex patterns"]))
         processor_category.addChild(QTreeWidgetItem(["user_script", "Execute custom Python script"]))
         processor_category.addChild(QTreeWidgetItem(["metadata_propagator", "Propagate document metadata"]))
-        
+    
         exporter_category = QTreeWidgetItem(self.steps_tree, ["Exporters", "Data output operations"])
         exporter_category.addChild(QTreeWidgetItem(["db_exporter", "Export to database"]))
         exporter_category.addChild(QTreeWidgetItem(["file_exporter", "Export to file"]))
         exporter_category.addChild(QTreeWidgetItem(["json_exporter", "Export to JSON"]))
-        
+    
         self.steps_tree.expandAll()
         steps_layout.addWidget(self.steps_tree)
-        
+    
         # Action buttons
         action_layout = QHBoxLayout()
-        
+    
         self.add_step_button = QPushButton("Add Selected Step")
         self.add_step_button.clicked.connect(self.add_selected_step)
         action_layout.addWidget(self.add_step_button)
-        
+    
         layout.addWidget(steps_group)
         layout.addLayout(action_layout)
-        
+    
         return panel
     
     def _create_visual_canvas(self) -> QWidget:
@@ -615,12 +638,12 @@ class PipelineDesigner(QWidget):
         # Connection buttons
         conn_buttons = QHBoxLayout()
         
-        self.add_output_button = QPushButton("Add Output")  # ← This button was causing the error
-        self.add_output_button.clicked.connect(self.add_output_connection)
+        self.add_output_button = QPushButton("Add Output")
+        self.add_output_button.clicked.connect(self.add_output_connection)  # ← ADDED METHOD
         conn_buttons.addWidget(self.add_output_button)
         
         self.remove_output_button = QPushButton("Remove Output")
-        self.remove_output_button.clicked.connect(self.remove_output_connection)
+        self.remove_output_button.clicked.connect(self.remove_output_connection)  # ← ADDED METHOD
         conn_buttons.addWidget(self.remove_output_button)
         
         io_layout.addLayout(conn_buttons)
@@ -641,12 +664,19 @@ class PipelineDesigner(QWidget):
         self.doc_loader_group = QGroupBox("Document Loader Parameters")
         doc_layout = QFormLayout(self.doc_loader_group)
         
-        self.source_path_edit = QLineEdit()
-        self.source_path_edit.setPlaceholderText("e.g., /path/to/documents/*.pdf")
-        doc_layout.addRow("Source Path:", self.source_path_edit)
+        # Document selection button
+        self.doc_selection_button = QPushButton("Select Documents...")
+        self.doc_selection_button.clicked.connect(self.select_documents_for_loader)
+        doc_layout.addRow("Document Selection:", self.doc_selection_button)
+        
+        self.selected_docs_text = QTextEdit()
+        self.selected_docs_text.setMaximumHeight(80)
+        self.selected_docs_text.setPlaceholderText("Selected documents will appear here...")
+        self.selected_docs_text.setReadOnly(True)
+        doc_layout.addRow("Selected Docs:", self.selected_docs_text)
         
         self.style_config_path_edit = QLineEdit()
-        self.style_config_path_edit.setPlaceholderText("Path to header style config")
+        self.style_config_path_edit.setPlaceholderText("Path to header style configuration")
         doc_layout.addRow("Style Config:", self.style_config_path_edit)
         
         self.batch_size_spin = QSpinBox()
@@ -654,6 +684,12 @@ class PipelineDesigner(QWidget):
         self.batch_size_spin.setMaximum(10000)
         self.batch_size_spin.setValue(100)
         doc_layout.addRow("Batch Size:", self.batch_size_spin)
+        
+        self.parallel_workers_spin = QSpinBox()
+        self.parallel_workers_spin.setMinimum(1)
+        self.parallel_workers_spin.setMaximum(8)
+        self.parallel_workers_spin.setValue(4)
+        doc_layout.addRow("Parallel Workers:", self.parallel_workers_spin)
         
         # User Script specific parameters
         self.script_group = QGroupBox("Script Parameters")
@@ -703,9 +739,39 @@ class PipelineDesigner(QWidget):
         self.case_insensitive_checkbox = QCheckBox("Case Insensitive")
         regex_layout.addRow("", self.case_insensitive_checkbox)
         
-        # DB Exporter parameters
+        # Database Exporter parameters
         self.db_exporter_group = QGroupBox("Database Export Parameters")
         db_layout = QFormLayout(self.db_exporter_group)
+        
+        # Database type selection
+        self.db_type_combo = QComboBox()
+        self.db_type_combo.addItems(["SQLite", "PostgreSQL", "MySQL", "MongoDB"])
+        self.db_type_combo.currentTextChanged.connect(self.on_db_type_changed)
+        db_layout.addRow("Database Type:", self.db_type_combo)
+        
+        # Connection configuration
+        self.db_host_edit = QLineEdit()
+        self.db_host_edit.setPlaceholderText("localhost")
+        db_layout.addRow("Host:", self.db_host_edit)
+        
+        self.db_port_spin = QSpinBox()
+        self.db_port_spin.setMinimum(1)
+        self.db_port_spin.setMaximum(65535)
+        self.db_port_spin.setValue(5432)
+        db_layout.addRow("Port:", self.db_port_spin)
+        
+        self.db_name_edit = QLineEdit()
+        self.db_name_edit.setPlaceholderText("chunks_db")
+        db_layout.addRow("Database:", self.db_name_edit)
+        
+        self.db_username_edit = QLineEdit()
+        self.db_username_edit.setPlaceholderText("username")
+        db_layout.addRow("Username:", self.db_username_edit)
+        
+        self.db_password_edit = QLineEdit()
+        self.db_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.db_password_edit.setPlaceholderText("password")
+        db_layout.addRow("Password:", self.db_password_edit)
         
         self.table_name_edit = QLineEdit()
         self.table_name_edit.setPlaceholderText("chunks")
@@ -715,7 +781,29 @@ class PipelineDesigner(QWidget):
         self.batch_insert_size_spin.setMinimum(1)
         self.batch_insert_size_spin.setMaximum(10000)
         self.batch_insert_size_spin.setValue(1000)
-        db_layout.addRow("Batch Size:", self.batch_insert_size_spin)
+        db_layout.addRow("Batch Insert Size:", self.batch_insert_size_spin)
+        
+        # File Exporter parameters
+        self.file_exporter_group = QGroupBox("File Export Parameters")
+        file_layout = QFormLayout(self.file_exporter_group)
+        
+        self.output_format_combo = QComboBox()
+        self.output_format_combo.addItems(["JSON", "CSV", "TXT", "XML"])
+        file_layout.addRow("Output Format:", self.output_format_combo)
+        
+        self.output_path_edit = QLineEdit()
+        self.output_path_edit.setPlaceholderText("./output")
+        file_layout.addRow("Output Path:", self.output_path_edit)
+        
+        self.output_path_button = QPushButton("Browse...")
+        self.output_path_button.clicked.connect(self.browse_output_path)
+        file_layout.addRow("", self.output_path_button)
+        
+        self.compression_checkbox = QCheckBox("Compress Output")
+        file_layout.addRow("", self.compression_checkbox)
+        
+        self.pretty_print_checkbox = QCheckBox("Pretty Print (JSON)")
+        file_layout.addRow("", self.pretty_print_checkbox)
         
         # Add all parameter groups
         layout.addWidget(self.doc_loader_group)
@@ -723,11 +811,129 @@ class PipelineDesigner(QWidget):
         layout.addWidget(self.delimiter_group)
         layout.addWidget(self.regex_group)
         layout.addWidget(self.db_exporter_group)
+        layout.addWidget(self.file_exporter_group)
         
         # Hide all groups initially
         self._hide_all_param_groups()
         
         return widget
+    
+    def _hide_all_param_groups(self):
+        """
+        Hide all parameter configuration groups
+        """
+        for group in [self.doc_loader_group, self.script_group, self.delimiter_group, 
+                     self.regex_group, self.db_exporter_group, self.file_exporter_group]:
+            group.setVisible(False)
+    
+    def _show_param_group_for_type(self, step_type: str):
+        """
+        Show appropriate parameter group based on step type
+        """
+        self._hide_all_param_groups()
+        
+        if step_type == "document_loader":
+            self.doc_loader_group.setVisible(True)
+        elif step_type == "user_script":
+            self.script_group.setVisible(True)
+        elif step_type in ["delimiter_splitter", "line_splitter"]:
+            self.delimiter_group.setVisible(True)
+        elif step_type == "regex_extractor":
+            self.regex_group.setVisible(True)
+        elif step_type in ["db_exporter", "postgres_exporter", "mysql_exporter", "sqlite_exporter", "mongodb_exporter"]:
+            self.db_exporter_group.setVisible(True)
+            # Set appropriate database type
+            if step_type == "sqlite_exporter":
+                self.db_type_combo.setCurrentText("SQLite")
+            elif step_type == "postgres_exporter":
+                self.db_type_combo.setCurrentText("PostgreSQL")
+            elif step_type == "mysql_exporter":
+                self.db_type_combo.setCurrentText("MySQL")
+            elif step_type == "mongodb_exporter":
+                self.db_type_combo.setCurrentText("MongoDB")
+        elif step_type in ["file_exporter", "json_exporter"]:
+            self.file_exporter_group.setVisible(True)
+            # Set appropriate format
+            if step_type == "json_exporter":
+                self.output_format_combo.setCurrentText("JSON")
+    
+    def on_db_type_changed(self, db_type: str):
+        """
+        Handle database type change - update default port and enable/disable fields
+        """
+        if db_type == "SQLite":
+            # SQLite doesn't need host/port/credentials
+            self.db_host_edit.setEnabled(False)
+            self.db_port_spin.setEnabled(False)
+            self.db_username_edit.setEnabled(False)
+            self.db_password_edit.setEnabled(False)
+            
+            # Clear fields
+            self.db_host_edit.clear()
+            self.db_port_spin.setValue(0)
+            self.db_username_edit.clear()
+            self.db_password_edit.clear()
+        else:
+            # Other databases need connection details
+            self.db_host_edit.setEnabled(True)
+            self.db_port_spin.setEnabled(True)
+            self.db_username_edit.setEnabled(True)
+            self.db_password_edit.setEnabled(True)
+            
+            # Set default ports
+            if db_type == "PostgreSQL":
+                self.db_port_spin.setValue(5432)
+            elif db_type == "MySQL":
+                self.db_port_spin.setValue(3306)
+            elif db_type == "MongoDB":
+                self.db_port_spin.setValue(27017)
+    
+    def browse_output_path(self):
+        """
+        Browse for output directory
+        """
+        directory = QFileDialog.getExistingDirectory(
+            self, 
+            "Select Output Directory", 
+            "", 
+            QFileDialog.Option.ShowDirsOnly
+        )
+        if directory:
+            self.output_path_edit.setText(directory)
+    
+    def select_documents_for_loader(self):
+        """
+        Open file dialog to select documents for document loader
+        """
+        if not self.selected_step_id:
+            QMessageBox.warning(self, "Warning", "Please select a document loader step first")
+            return
+        
+        # Check if selected step is a document loader
+        step = self.steps.get(self.selected_step_id)
+        if not step or step.type != "document_loader":
+            QMessageBox.warning(self, "Warning", "Please select a document loader step")
+            return
+        
+        # Open file dialog
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self, 
+            "Select Documents for Processing", 
+            "", 
+            "Documents (*.pdf *.docx *.txt *.rtf *.odt);;PDF Files (*.pdf);;DOCX Files (*.docx);;TXT Files (*.txt);;All Files (*)"
+        )
+        
+        if file_paths:
+            # Update step parameters
+            step.params["document_paths"] = file_paths
+            
+            # Update UI display
+            self.selected_docs_text.setPlainText("\n".join(file_paths))
+            
+            # Update step in canvas
+            self.canvas.update_step_name(self.selected_step_id, step.name)
+            
+            self.status_bar.showMessage(f"Selected {len(file_paths)} documents for processing")
     
     def setup_connections(self):
         """
@@ -778,7 +984,7 @@ class PipelineDesigner(QWidget):
         """
         defaults = {
             "document_loader": {
-                "source_path": "",  # ← CRITICAL: Required for validation
+                "document_paths": [],  # ← CRITICAL: Required for validation
                 "style_config_path": "",
                 "batch_size": 100,
                 "parallel_workers": 4
@@ -811,19 +1017,64 @@ class PipelineDesigner(QWidget):
                 "memory_limit_mb": 200
             },
             "db_exporter": {
-                "target_db_config": {},
+                "db_type": "sqlite",
+                "host": "localhost",
+                "port": 5432,
+                "database": "chunks_db",
+                "username": "",
+                "password": "",
                 "table_name": "chunks",  # ← CRITICAL: Required for validation
                 "batch_size": 1000
+            },
+            "postgres_exporter": {
+                "db_type": "postgresql",
+                "host": "localhost",
+                "port": 5432,
+                "database": "chunks_db",
+                "username": "postgres",
+                "password": "",
+                "table_name": "chunks",
+                "batch_size": 1000
+            },
+            "mysql_exporter": {
+                "db_type": "mysql",
+                "host": "localhost",
+                "port": 3306,
+                "database": "chunks_db",
+                "username": "root",
+                "password": "",
+                "table_name": "chunks",
+                "batch_size": 1000
+            },
+            "sqlite_exporter": {
+                "db_type": "sqlite",
+                "path": "./chunks.db",
+                "table_name": "chunks",
+                "batch_size": 1000
+            },
+            "mongodb_exporter": {
+                "db_type": "mongodb",
+                "host": "localhost",
+                "port": 27017,
+                "database": "chunks_db",
+                "username": "",
+                "password": "",
+                "collection_name": "chunks",
+                "batch_size": 1000
+            },
+            "json_exporter": {
+                "output_format": "json",
+                "output_path": "./output",
+                "file_name": "chunks.json",
+                "compress": False,
+                "pretty_print": True
             },
             "file_exporter": {
                 "output_format": "json",
                 "output_path": "./output",
-                "compression": False
-            },
-            "json_exporter": {
-                "output_path": "./output",
-                "pretty_print": True,
-                "include_metadata": True
+                "file_name": "chunks.json",
+                "compress": False,
+                "pretty_print": True
             },
             "metadata_propagator": {
                 "preserve_original_context": True,
@@ -839,6 +1090,11 @@ class PipelineDesigner(QWidget):
         if not step_id:  # Clicked outside
             self.selected_step_id = None
             self._clear_step_config_ui()
+            return
+        
+        # Check if step exists before accessing
+        if step_id not in self.steps:
+            QMessageBox.warning(self, "Warning", f"Step {step_id} not found in internal storage")
             return
         
         self.selected_step_id = step_id
@@ -882,9 +1138,18 @@ class PipelineDesigner(QWidget):
         Load step parameters into appropriate configuration widgets
         """
         if step_type == "document_loader":
-            self.source_path_edit.setText(params.get("source_path", ""))
+            # Load document paths
+            doc_paths = params.get("document_paths", [])
+            self.selected_docs_text.setPlainText("\n".join(doc_paths))
+            
+            # Load style config path
             self.style_config_path_edit.setText(params.get("style_config_path", ""))
+            
+            # Load batch size
             self.batch_size_spin.setValue(params.get("batch_size", 100))
+            
+            # Load parallel workers
+            self.parallel_workers_spin.setValue(params.get("parallel_workers", 4))
         
         elif step_type == "user_script":
             self.script_id_edit.setText(params.get("script_id", ""))
@@ -901,51 +1166,30 @@ class PipelineDesigner(QWidget):
             self.named_groups_checkbox.setChecked(params.get("named_groups_only", True))
             self.case_insensitive_checkbox.setChecked(params.get("case_insensitive", True))
         
-        elif step_type in ["db_exporter", "postgres_exporter", "mysql_exporter", "sqlite_exporter", "mongodb_exporter", "json_exporter"]:
-            self.table_name_edit.setText(params.get("table_name", "chunks"))
+        elif step_type in ["db_exporter", "postgres_exporter", "mysql_exporter", "sqlite_exporter", "mongodb_exporter"]:
+            # Load database parameters
+            self.db_type_combo.setCurrentText(params.get("db_type", "SQLite").title())
+            
+            if params.get("db_type") != "sqlite":
+                self.db_host_edit.setText(params.get("host", "localhost"))
+                self.db_port_spin.setValue(params.get("port", 5432))
+                self.db_name_edit.setText(params.get("database", "chunks_db"))
+                self.db_username_edit.setText(params.get("username", ""))
+                self.db_password_edit.setText(params.get("password", ""))
+            
+            # Load table/collection name
+            table_name = params.get("table_name", params.get("collection_name", "chunks"))
+            self.table_name_edit.setText(table_name)
+            
+            # Load batch size
             self.batch_insert_size_spin.setValue(params.get("batch_size", 1000))
-    
-    def _get_step_params_from_widgets(self, step_type: str) -> Dict[str, Any]:
-        """
-        Get step parameters from configuration widgets
-        """
-        if step_type == "document_loader":
-            return {
-                "source_path": self.source_path_edit.text(),
-                "style_config_path": self.style_config_path_edit.text(),
-                "batch_size": self.batch_size_spin.value(),
-                "parallel_workers": 4  # Default
-            }
         
-        elif step_type == "user_script":
-            return {
-                "script_id": self.script_id_edit.text(),
-                "timeout_seconds": self.timeout_spin.value(),
-                "memory_limit_mb": self.memory_limit_spin.value()
-            }
-        
-        elif step_type in ["delimiter_splitter", "line_splitter"]:
-            return {
-                "delimiter": self.delimiter_edit.text(),
-                "use_regex": self.use_regex_checkbox.isChecked(),
-                "preserve_delimiter": self.preserve_delimiter_checkbox.isChecked()
-            }
-        
-        elif step_type == "regex_extractor":
-            return {
-                "pattern": self.pattern_edit.text(),
-                "named_groups_only": self.named_groups_checkbox.isChecked(),
-                "case_insensitive": self.case_insensitive_checkbox.isChecked()
-            }
-        
-        elif step_type in ["db_exporter", "postgres_exporter", "mysql_exporter", "sqlite_exporter", "mongodb_exporter", "json_exporter"]:
-            return {
-                "table_name": self.table_name_edit.text(),
-                "batch_size": self.batch_insert_size_spin.value()
-            }
-        
-        # Return empty dict for other types
-        return {}
+        elif step_type in ["file_exporter", "json_exporter"]:
+            # Load file export parameters
+            self.output_format_combo.setCurrentText(params.get("output_format", "JSON").title())
+            self.output_path_edit.setText(params.get("output_path", "./output"))
+            self.compression_checkbox.setChecked(params.get("compress", False))
+            self.pretty_print_checkbox.setChecked(params.get("pretty_print", True))
     
     def on_step_name_changed(self, text: str):
         """
@@ -956,21 +1200,16 @@ class PipelineDesigner(QWidget):
             self.canvas.update_step_name(self.selected_step_id, text)
             self._update_connection_dropdowns()
     
-    def on_step_params_changed(self):
-        """
-        Handle step parameters change
-        """
-        if self.selected_step_id and self.selected_step_id in self.steps:
-            step_type = self.steps[self.selected_step_id].type
-            params = self._get_step_params_from_widgets(step_type)
-            self.steps[self.selected_step_id].params = params
-            self.status_bar.showMessage(f"Updated parameters for {self.selected_step_id}")
-    
     def on_input_connection_changed(self, text: str):
         """
         Handle input connection change
         """
         if not self.selected_step_id:
+            return
+        
+        # Check if step exists in self.steps before accessing
+        if self.selected_step_id not in self.steps:
+            QMessageBox.warning(self, "Warning", f"Step {self.selected_step_id} not found in internal storage")
             return
         
         # Get selected input step ID
@@ -1014,10 +1253,13 @@ class PipelineDesigner(QWidget):
             self.connections.append(connection)
             
             # Update step connections
-            self.steps[from_step_id].output_steps.append(to_step_id)
-            self.steps[to_step_id].input_step_id = from_step_id
+            from_step = self.steps[from_step_id]
+            to_step = self.steps[to_step_id]
             
-            # Update canvas
+            from_step.output_steps.append(to_step_id)
+            to_step.input_step_id = from_step_id
+            
+            # Update canvas and UI
             self.canvas.update_connections(self.connections)
             self._update_step_connections_in_ui(to_step_id)
             
@@ -1042,6 +1284,11 @@ class PipelineDesigner(QWidget):
         """
         if not self.selected_step_id:
             QMessageBox.warning(self, "Warning", "Please select a step first")
+            return
+        
+        # Check if step exists before accessing
+        if self.selected_step_id not in self.steps:
+            QMessageBox.warning(self, "Warning", f"Step {self.selected_step_id} not found in internal storage")
             return
         
         # Remove all connections for this step
@@ -1072,6 +1319,11 @@ class PipelineDesigner(QWidget):
             QMessageBox.warning(self, "Warning", "Please select a step to remove")
             return
         
+        # Check if step exists in self.steps before accessing
+        if self.selected_step_id not in self.steps:
+            QMessageBox.warning(self, "Warning", f"Step {self.selected_step_id} not found in internal storage")
+            return
+        
         reply = QMessageBox.question(
             self, 
             'Confirm Removal',
@@ -1081,17 +1333,17 @@ class PipelineDesigner(QWidget):
         )
         
         if reply == QMessageBox.StandardButton.Yes:
-            # Remove from canvas and internal storage
+            # Remove from canvas
             self.canvas.remove_step(self.selected_step_id)
+            
+            # Remove from internal storage
+            del self.steps[self.selected_step_id]
             
             # Remove from connections
             self.connections = [
                 conn for conn in self.connections 
-                if conn.from_step_id != self.selected_step_id and conn.to_step_id != self.selected_step_id
+                if not (conn.from_step_id == self.selected_step_id or conn.to_step_id == self.selected_step_id)
             ]
-            
-            # Remove from steps dictionary
-            del self.steps[self.selected_step_id]
             
             # Update connection dropdowns
             self._update_connection_dropdowns()
@@ -1104,11 +1356,15 @@ class PipelineDesigner(QWidget):
     
     def add_output_connection(self):
         """
-        Add output connection to selected step
-        This method was missing and is now added!
+        Add output connection from selected step
         """
         if not self.selected_step_id:
             QMessageBox.warning(self, "Warning", "Please select a step first")
+            return
+        
+        # Check if step exists before accessing
+        if self.selected_step_id not in self.steps:
+            QMessageBox.warning(self, "Warning", f"Step {self.selected_step_id} not found in internal storage")
             return
         
         # Create dialog to select target step
@@ -1120,10 +1376,10 @@ class PipelineDesigner(QWidget):
         
         layout = QVBoxLayout(dialog)
         
-        # List of available target steps (excluding current step and already connected outputs)
+        # List of available steps (excluding current step and already connected outputs)
         available_list = QListWidget()
-        current_step = self.steps[self.selected_step_id]
         
+        current_step = self.steps[self.selected_step_id]
         for step_id, step in self.steps.items():
             if (step_id != self.selected_step_id and 
                 step_id not in current_step.output_steps):
@@ -1144,26 +1400,18 @@ class PipelineDesigner(QWidget):
             if selected_items:
                 target_step_id = selected_items[0].data(Qt.ItemDataRole.UserRole)
                 
-                # Check if connection already exists
-                existing_conn = next(
-                    (conn for conn in self.connections 
-                     if conn.from_step_id == self.selected_step_id and conn.to_step_id == target_step_id), 
-                    None
-                )
-                
-                if existing_conn:
-                    QMessageBox.information(self, "Info", "Connection already exists")
-                    return
-                
-                # Update step connections
-                self.steps[self.selected_step_id].output_steps.append(target_step_id)
-                self.steps[target_step_id].input_step_id = self.selected_step_id
-                
-                # Add visual connection
+                # Add connection
                 connection = VisualConnection(self.selected_step_id, target_step_id)
                 self.connections.append(connection)
                 
-                # Update canvas and UI
+                # Update step connections
+                from_step = self.steps[self.selected_step_id]
+                to_step = self.steps[target_step_id]
+                
+                from_step.output_steps.append(target_step_id)
+                to_step.input_step_id = self.selected_step_id
+                
+                # Update canvas
                 self.canvas.update_connections(self.connections)
                 self._update_step_connections_in_ui(self.selected_step_id)
                 
@@ -1172,7 +1420,6 @@ class PipelineDesigner(QWidget):
     def remove_output_connection(self):
         """
         Remove selected output connection
-        This method was also missing and is now added!
         """
         if not self.selected_step_id:
             QMessageBox.warning(self, "Warning", "Please select a step first")
@@ -1215,10 +1462,16 @@ class PipelineDesigner(QWidget):
             
             self.status_bar.showMessage(f"Removed output connection: {self.selected_step_id} → {target_step_id}")
     
+    def _update_connection_dropdowns(self):
+        """
+        Update connection dropdowns with all available steps
+        """
+        # This updates the connection dropdowns when steps are added/removed
+        pass
+    
     def _update_step_connections_in_ui(self, step_id: str):
         """
         Update step connections display in UI
-        This method was missing and is now added!
         """
         if step_id not in self.steps:
             return
@@ -1234,16 +1487,16 @@ class PipelineDesigner(QWidget):
     def _clear_step_config_ui(self):
         """
         Clear step configuration UI
-        This method was missing and is now added!
         """
         self.step_id_label.setText("No step selected")
         self.step_type_label.setText("No step selected")
         self.step_name_edit.clear()
         
         # Clear all parameter widgets
-        self.source_path_edit.clear()
+        self.selected_docs_text.clear()
         self.style_config_path_edit.clear()
         self.batch_size_spin.setValue(100)
+        self.parallel_workers_spin.setValue(4)
         
         self.script_id_edit.clear()
         self.timeout_spin.setValue(60)
@@ -1257,8 +1510,19 @@ class PipelineDesigner(QWidget):
         self.named_groups_checkbox.setChecked(True)
         self.case_insensitive_checkbox.setChecked(True)
         
+        self.db_type_combo.setCurrentText("SQLite")
+        self.db_host_edit.setText("localhost")
+        self.db_port_spin.setValue(5432)
+        self.db_name_edit.setText("chunks_db")
+        self.db_username_edit.setText("")
+        self.db_password_edit.setText("")
         self.table_name_edit.setText("chunks")
         self.batch_insert_size_spin.setValue(1000)
+        
+        self.output_format_combo.setCurrentText("JSON")
+        self.output_path_edit.setText("./output")
+        self.compression_checkbox.setChecked(False)
+        self.pretty_print_checkbox.setChecked(True)
         
         # Hide all parameter groups
         self._hide_all_param_groups()
@@ -1267,67 +1531,19 @@ class PipelineDesigner(QWidget):
         self.input_combo.clear()
         self.output_list.clear()
     
-    def _update_connection_dropdowns(self):
-        """
-        Update connection dropdowns with all available steps
-        This method was missing and is now added!
-        """
-        # Clear and repopulate input combo
-        current_input = self.input_combo.currentData() if self.selected_step_id else None
-        
-        self.input_combo.clear()
-        self.input_combo.addItem("None", "")
-        
-        for step_id, step in self.steps.items():
-            if step_id != self.selected_step_id:
-                self.input_combo.addItem(step.name, step_id)
-        
-        # Restore current selection if it still exists
-        if current_input and current_input in self.steps:
-            for i in range(self.input_combo.count()):
-                if self.input_combo.itemData(i) == current_input:
-                    self.input_combo.setCurrentIndex(i)
-                    break
-    
-    def _hide_all_param_groups(self):
-        """
-        Hide all parameter configuration groups
-        This method was missing and is now added!
-        """
-        for group in [self.doc_loader_group, self.script_group, self.delimiter_group, 
-                     self.regex_group, self.db_exporter_group]:
-            group.setVisible(False)
-    
-    def _show_param_group_for_type(self, step_type: str):
-        """
-        Show appropriate parameter group based on step type
-        This method was missing and is now added!
-        """
-        self._hide_all_param_groups()
-        
-        if step_type == "document_loader":
-            self.doc_loader_group.setVisible(True)
-        elif step_type == "user_script":
-            self.script_group.setVisible(True)
-        elif step_type in ["delimiter_splitter", "line_splitter"]:
-            self.delimiter_group.setVisible(True)
-        elif step_type == "regex_extractor":
-            self.regex_group.setVisible(True)
-        elif step_type in ["db_exporter", "postgres_exporter", "mysql_exporter", "sqlite_exporter", "mongodb_exporter", "json_exporter"]:
-            self.db_exporter_group.setVisible(True)
-    
     def save_pipeline(self):
         """
         Save current pipeline configuration
+        ✅ FIXED: Properly track pipeline ID
         """
         if not self.steps:
             QMessageBox.warning(self, "Warning", "No steps in pipeline")
             return
-        
+    
         # Generate pipeline config
         pipeline_config = self._generate_pipeline_config()
-        
-        # Validate configuration first
+    
+        # Validate configuration
         try:
             validation_errors = self.pipeline_manager.validate_pipeline_config(pipeline_config)
             if validation_errors:
@@ -1341,43 +1557,44 @@ class PipelineDesigner(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Validation failed: {str(e)}")
             return
-        
-        # Save using pipeline manager
+    
+        # ✅ FIXED: Save using pipeline manager and update current pipeline ID
         try:
             if self.current_pipeline_id:
+                # Update existing pipeline
                 success = self.pipeline_manager.update_pipeline(self.current_pipeline_id, pipeline_config)
+                if success:
+                    QMessageBox.information(self, "Success", f"Pipeline updated successfully!")
+                    self.status_bar.showMessage(f"Pipeline updated: {self.current_pipeline_id}")
             else:
+                # Create new pipeline
                 self.current_pipeline_id = self.pipeline_manager.create_pipeline(pipeline_config)
-                success = True
-            
-            if success:
                 QMessageBox.information(self, "Success", f"Pipeline saved successfully!")
                 self.status_bar.showMessage(f"Pipeline saved: {self.current_pipeline_id}")
-            else:
-                QMessageBox.critical(self, "Error", "Failed to save pipeline")
-                
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save pipeline: {str(e)}")
+
     
     def _generate_pipeline_config(self) -> PipelineConfig:
         """
         Generate pipeline configuration from current steps and connections
         """
         from domain.pipeline import PipelineConfig, PipelineStepConfig, StepType
-        
+    
         # Create step configs
         step_configs = []
         for step_id, step in self.steps.items():
+            # Create step config - use either input_step_id OR depends_on, not both
             step_config = PipelineStepConfig(
                 type=StepType(step.type),
                 id=step.id,
                 name=step.name,
                 params=step.params,
-                input_step_id=step.input_step_id,
-                depends_on=step.output_steps  # For conditional flows
+                input_step_id=step.input_step_id,  # For data flow (input from previous step)
+                depends_on=[]  # For conditional dependencies - leave empty for now
             )
             step_configs.append(step_config)
-        
+    
         config = PipelineConfig(
             name=self.pipeline_name_edit.text() or "Untitled Pipeline",
             description=self.pipeline_description_edit.text(),
@@ -1386,7 +1603,7 @@ class PipelineDesigner(QWidget):
             source_config={},
             target_config={}
         )
-        
+    
         return config
     
     def load_pipeline(self):
@@ -1472,34 +1689,221 @@ class PipelineDesigner(QWidget):
     def run_pipeline(self):
         """
         Run current pipeline
+        ✅ FIXED: Use current_pipeline_id to run the correct pipeline
         """
         if not self.steps:
             QMessageBox.warning(self, "Warning", "No steps in pipeline")
             return
-        
-        # Get document paths to process
-        file_paths, _ = QFileDialog.getOpenFileNames(
-            self, 
-            "Select Documents to Process", 
-            "", 
-            "Documents (*.pdf *.docx *.txt);;PDF Files (*.pdf);;DOCX Files (*.docx);;TXT Files (*.txt);;All Files (*)"
-        )
-        
-        if not file_paths:
-            QMessageBox.information(self, "Info", "No documents selected")
+    
+        if not self.current_pipeline_id:
+            QMessageBox.warning(self, "Warning", "Pipeline not saved yet. Please save pipeline first.")
             return
-        
-        # Create pipeline config and run
-        pipeline_config = self._generate_pipeline_config()
-        
+    
+        # Get document paths to process
+        doc_paths = self._get_document_paths_for_pipeline()
+    
+        if not doc_paths:
+            QMessageBox.information(self, "Info", "No documents selected for processing")
+            return
+    
+        # ✅ FIXED: Use the current_pipeline_id to run the correct pipeline
         try:
             run_id = self.pipeline_manager.execute_pipeline(
-                pipeline_config.id, 
-                file_paths
+                self.current_pipeline_id,  # ← Use the saved pipeline ID
+                doc_paths
             )
             QMessageBox.information(self, "Success", f"Pipeline executed successfully! Run ID: {run_id}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Pipeline execution failed: {str(e)}")
+    
+    def _get_document_paths_for_pipeline(self) -> List[str]:
+        """
+        Get document paths for pipeline execution
+        """
+        # Check if any document loader step has paths configured
+        for step in self.steps.values():
+            if (step.type == "document_loader" and 
+                "document_paths" in step.params and 
+                step.params["document_paths"]):
+                return step.params["document_paths"]
+    
+        # If no paths configured, prompt user
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self, 
+            "Select Documents for Processing", 
+            "", 
+            "Documents (*.pdf *.docx *.txt);;PDF Files (*.pdf);;DOCX Files (*.docx);;TXT Files (*.txt);;All Files (*)"
+        )
+        return file_paths
+    
+    def view_pipeline_results(self):
+        """
+        View pipeline results and where they are saved
+        """
+        if not self.current_pipeline_id:
+            QMessageBox.warning(self, "Warning", "No pipeline loaded or created yet")
+            return
+        
+        # Show pipeline results in separate tab
+        self.results_tab.setVisible(True)
+        self._load_pipeline_results()
+    
+    def _create_results_view_panel(self) -> QWidget:
+        """
+        Create panel for viewing pipeline results
+        """
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        
+        # Results group
+        results_group = QGroupBox("Pipeline Results")
+        results_layout = QVBoxLayout(results_group)
+        
+        # Results summary
+        self.results_summary = QTextEdit()
+        self.results_summary.setReadOnly(True)
+        self.results_summary.setFont(QFont("Consolas", 10))
+        results_layout.addWidget(self.results_summary)
+        
+        # Results location info
+        location_group = QGroupBox("Results Location")
+        location_layout = QFormLayout(location_group)
+        
+        self.results_location_label = QLabel("Results location information will appear here")
+        location_layout.addRow("Location:", self.results_location_label)
+        
+        self.results_format_label = QLabel("Format: Unknown")
+        location_layout.addRow("Format:", self.results_format_label)
+        
+        results_layout.addWidget(location_group)
+        
+        # Action buttons
+        action_layout = QHBoxLayout()
+        
+        self.refresh_results_button = QPushButton("Refresh Results")
+        self.refresh_results_button.clicked.connect(self._load_pipeline_results)
+        action_layout.addWidget(self.refresh_results_button)
+        
+        self.view_in_db_button = QPushButton("View in Database")
+        self.view_in_db_button.clicked.connect(self._view_results_in_db)
+        action_layout.addWidget(self.view_in_db_button)
+        
+        self.export_results_button = QPushButton("Export Results")
+        self.export_results_button.clicked.connect(self._export_results)
+        action_layout.addWidget(self.export_results_button)
+        
+        action_layout.addStretch()
+        
+        results_layout.addLayout(action_layout)
+        
+        layout.addWidget(results_group)
+        
+        return panel
+    
+    def _load_pipeline_results(self):
+        """
+        Load and display pipeline results
+        """
+        try:
+            # Get run history for current pipeline from logging service
+            from infrastructure.database.logging_service import LoggingService
+            logging_service = LoggingService(self.db)
+            runs = logging_service.get_run_history(self.current_pipeline_id, limit=10)
+            
+            # Display results summary
+            summary = f"Pipeline Results for: {self.current_pipeline_id}\n"
+            summary += "="*60 + "\n\n"
+            
+            if runs:
+                for run in runs:
+                    summary += f"Run ID: {run.get('id', 'Unknown')}\n"
+                    summary += f"Status: {run.get('status', 'Unknown')}\n"
+                    summary += f"Start Time: {run.get('start_time', 'Unknown')}\n"
+                    summary += f"End Time: {run.get('end_time', 'Unknown')}\n"
+                    summary += f"Processed: {run.get('processed_count', 0)}\n"
+                    summary += f"Success: {run.get('success_count', 0)}\n"
+                    summary += f"Errors: {run.get('error_count', 0)}\n"
+                    
+                    if run.get('errors'):
+                        summary += "Errors:\n"
+                        for error in run['errors'][:3]:  # Show first 3 errors
+                            summary += f"  - {error.get('error_message', 'Unknown error')}\n"
+                        if len(run['errors']) > 3:
+                            summary += f"  ... and {len(run['errors']) - 3} more errors\n"
+                    
+                    summary += "-"*40 + "\n"
+            else:
+                summary += "No runs found for this pipeline.\n"
+            
+            self.results_summary.setText(summary)
+            
+            # Update location info
+            from infrastructure.database.unified_db import UnifiedDatabase
+            db_path = getattr(self.db, 'db_path', 'Unknown')
+            self.results_location_label.setText(f"Database: {db_path}")
+            self.results_format_label.setText("Format: SQLite")
+            
+        except Exception as e:
+            # Handle error gracefully
+            self.results_summary.setText(f"Error loading results: {str(e)}")
+            self.results_location_label.setText("Error loading location info")
+            self.results_format_label.setText("Error")
+    
+    def _view_results_in_db(self):
+        """
+        View results in database directly
+        """
+        QMessageBox.information(
+            self, 
+            "Database Viewer", 
+            "Database viewer functionality would open here to see extracted chunks and results."
+        )
+    
+    def _export_results(self):
+        """
+        Export results to external format
+        """
+        export_path, _ = QFileDialog.getSaveFileName(
+            self, 
+            "Export Results", 
+            "", 
+            "JSON Files (*.json);;CSV Files (*.csv);;All Files (*)"
+        )
+        
+        if export_path:
+            try:
+                from infrastructure.database.logging_service import LoggingService
+                logging_service = LoggingService(self.db)
+                
+                if export_path.lower().endswith('.json'):
+                    runs = logging_service.get_run_history(self.current_pipeline_id, limit=100)
+                    with open(export_path, 'w', encoding='utf-8') as f:
+                        json.dump(runs, f, indent=2, ensure_ascii=False, default=str)
+                else:
+                    # CSV export
+                    runs = logging_service.get_run_history(self.current_pipeline_id, limit=100)
+                    import csv
+                    with open(export_path, 'w', newline='', encoding='utf-8') as f:
+                        writer = csv.writer(f)
+                        writer.writerow(['Run ID', 'Status', 'Start Time', 'End Time', 'Processed', 'Success', 'Errors'])
+                        for run in runs:
+                            writer.writerow([
+                                run.get('id', ''),
+                                run.get('status', ''),
+                                run.get('start_time', ''),
+                                run.get('end_time', ''),
+                                run.get('processed_count', 0),
+                                run.get('success_count', 0),
+                                run.get('error_count', 0)
+                            ])
+                
+                QMessageBox.information(
+                    self, 
+                    "Success", 
+                    f"Results exported to: {export_path}"
+                )
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to export results: {str(e)}")
     
     def refresh(self):
         """

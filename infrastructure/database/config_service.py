@@ -15,7 +15,8 @@ import secrets
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from domain.pipeline import PipelineConfig, PipelineStepConfig, StepType
+from domain.pipeline import PipelineConfig, PipelineStepConfig, StepType, PipelineStatus
+from domain.document import DocumentFormat
 from .unified_db import UnifiedDatabase
 
 class ConfigService:
@@ -37,8 +38,9 @@ class ConfigService:
         pipeline_id = config.id or f"pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(4)}"
         
         query = """
-            INSERT INTO pipelines (id, name, description, config_json, schedule, source_config, target_config, version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO pipelines 
+            (id, name, description, config_json, schedule, source_config, target_config, version, created_at, updated_at, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         """
         
         params = (
@@ -49,7 +51,9 @@ class ConfigService:
             config.schedule,
             json.dumps(config.source_config, ensure_ascii=False),
             json.dumps(config.target_config, ensure_ascii=False),
-            config.version
+            config.version,
+            config.created_at.isoformat() if hasattr(config, 'created_at') else datetime.now().isoformat(),
+            config.updated_at.isoformat() if hasattr(config, 'updated_at') else datetime.now().isoformat()
         )
         
         self.db.execute_update(query, params)
@@ -71,34 +75,38 @@ class ConfigService:
         
         row = results[0]
         
-        # Parse configuration from JSON
-        config_data = json.loads(row["config_json"])
-        
-        # Create steps from configuration
-        steps = []
-        for step_data in config_data.get("steps", []):
-            step = PipelineStepConfig(
-                id=step_data.get("id"),
-                type=StepType(step_data["type"]),
-                name=step_data.get("name", ""),
-                params=step_data.get("params", {}),
-                input_step_id=step_data.get("input_step_id"),
-                depends_on=step_data.get("depends_on", [])
+        try:
+            # Parse configuration from JSON
+            config_data = json.loads(row["config_json"])
+            
+            # Create pipeline steps from configuration
+            steps = []
+            for step_data in config_data.get("steps", []):
+                step = PipelineStepConfig(
+                    type=StepType(step_data["type"]),
+                    id=step_data.get("id", f"step_{secrets.token_hex(4)}"),
+                    name=step_data.get("name", ""),
+                    params=step_data.get("params", {}),
+                    input_step_id=step_data.get("input_step_id"),
+                    depends_on=step_data.get("depends_on", [])
+                )
+                steps.append(step)
+            
+            config = PipelineConfig(
+                id=row["id"],
+                name=row["name"],
+                description=row["description"],
+                steps=steps,
+                schedule=row.get("schedule", ""),
+                source_config=json.loads(row["source_config"]) if row.get("source_config") else {},
+                target_config=json.loads(row["target_config"]) if row.get("target_config") else {},
+                version=row.get("version", 1)
             )
-            steps.append(step)
-        
-        config = PipelineConfig(
-            id=row["id"],
-            name=row["name"],
-            description=row["description"],
-            steps=steps,
-            schedule=row["schedule"],
-            source_config=json.loads(row["source_config"]),
-            target_config=json.loads(row["target_config"]),
-            version=row["version"]
-        )
-        
-        return config
+            
+            return config
+        except Exception as e:
+            print(f"Error loading pipeline config: {e}")
+            return None
     
     def update_pipeline_config(self, pipeline_id: str, config: PipelineConfig) -> bool:
         """
@@ -111,7 +119,8 @@ class ConfigService:
         """
         query = """
             UPDATE pipelines 
-            SET name=?, description=?, config_json=?, schedule=?, source_config=?, target_config=?, updated_at=CURRENT_TIMESTAMP
+            SET name=?, description=?, config_json=?, schedule=?, source_config=?, target_config=?, 
+                version=?, updated_at=CURRENT_TIMESTAMP
             WHERE id=? AND is_active=1
         """
         
@@ -122,6 +131,7 @@ class ConfigService:
             config.schedule,
             json.dumps(config.source_config, ensure_ascii=False),
             json.dumps(config.target_config, ensure_ascii=False),
+            config.version,
             pipeline_id
         )
         
@@ -132,7 +142,7 @@ class ConfigService:
         """
         Delete pipeline configuration (soft delete)
         Args:
-            pipeline_id: Pipeline identifier
+            pipeline_id: Pipeline identifier to delete
         Returns:
             bool: True if deleted successfully
         """
@@ -158,26 +168,80 @@ class ConfigService:
         
         return self.db.execute_query(query)
     
+    def get_pipeline_statistics(self, pipeline_id: str) -> Dict[str, Any]:
+        """
+        Get statistics for a specific pipeline
+        Args:
+            pipeline_id: Pipeline identifier
+        Returns:
+            Dict with pipeline statistics
+        """
+        query = "SELECT * FROM pipelines WHERE id = ? AND is_active = 1"
+        results = self.db.execute_query(query, (pipeline_id,))
+        
+        if not results:
+            return {"error": "Pipeline not found"}
+        
+        row = results[0]
+        
+        # Get run history for this pipeline
+        from .logging_service import LoggingService
+        logging_service = LoggingService(self.db)
+        run_history = logging_service.get_run_history(pipeline_id, limit=100)
+        
+        return {
+            "pipeline_info": row,
+            "run_count": len(run_history),
+            "recent_runs": run_history[:10],  # Last 10 runs
+            "status_distribution": self._calculate_status_distribution(run_history)
+        }
+    
+    def _calculate_status_distribution(self, run_history: List[Dict[str, Any]]) -> Dict[str, int]:
+        """
+        Calculate distribution of run statuses
+        """
+        status_counts = {}
+        for run in run_history:
+            status = run.get("status", "UNKNOWN").lower()
+            status_counts[status] = status_counts.get(status, 0) + 1
+        return status_counts
+    
+    def get_pipeline_name(self, pipeline_id: str) -> str:
+        """
+        Get pipeline name by ID
+        Args:
+            pipeline_id: Pipeline identifier
+        Returns:
+            str: Pipeline name or empty string if not found
+        """
+        query = "SELECT name FROM pipelines WHERE id = ? AND is_active = 1"
+        results = self.db.execute_query(query, (pipeline_id,))
+        
+        return results[0]["name"] if results else "Unknown Pipeline"
+    
     def save_db_connection_config(self, config: Dict[str, Any]) -> bool:
         """
         Save database connection configuration
         Args:
-            config: Connection configuration with 'name', 'type', 'config_json'
+            config: Connection configuration
         Returns:
             bool: True if saved successfully
         """
         connection_id = config.get("id", f"conn_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(4)}")
         
         query = """
-            INSERT INTO db_connections (id, name, type, config_json)
-            VALUES (?, ?, ?, ?)
+            INSERT OR REPLACE INTO db_connections 
+            (id, name, type, config_json, created_at, updated_at, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, 1)
         """
         
         params = (
             connection_id,
             config["name"],
             config["type"],
-            json.dumps(config.get("config", {}), ensure_ascii=False)
+            json.dumps(config.get("config", {}), ensure_ascii=False),
+            datetime.now().isoformat(),
+            datetime.now().isoformat()
         )
         
         try:
@@ -228,55 +292,3 @@ class ConfigService:
         query = "UPDATE db_connections SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
         rows_affected = self.db.execute_update(query, (connection_id,))
         return rows_affected > 0
-    
-    def get_pipeline_statistics(self, pipeline_id: str) -> Dict[str, Any]:
-        """
-        Get statistics for a specific pipeline
-        Args:
-            pipeline_id: Pipeline identifier
-        Returns:
-            Dict with pipeline statistics
-        """
-        from .logging_service import LoggingService
-        logging_service = LoggingService(self.db)
-        
-        # Get run history for this pipeline
-        runs = logging_service.get_run_history(pipeline_id, limit=1000)
-        
-        # Calculate statistics
-        total_runs = len(runs)
-        completed_runs = sum(1 for run in runs if run.get("status") == "COMPLETED")
-        failed_runs = sum(1 for run in runs if run.get("status") == "FAILED")
-        
-        # Calculate average processing time
-        processing_times = []
-        for run in runs:
-            if run.get("start_time") and run.get("end_time"):
-                start_time = datetime.fromisoformat(run["start_time"])
-                end_time = datetime.fromisoformat(run["end_time"])
-                duration = (end_time - start_time).total_seconds()
-                processing_times.append(duration)
-        
-        avg_processing_time = sum(processing_times) / len(processing_times) if processing_times else 0
-        
-        return {
-            "total_runs": total_runs,
-            "completed_runs": completed_runs,
-            "failed_runs": failed_runs,
-            "success_rate": completed_runs / total_runs * 100 if total_runs > 0 else 0,
-            "average_processing_time": avg_processing_time,
-            "recent_runs": runs[:10]  # Last 10 runs
-        }
-    
-    def get_pipeline_name(self, pipeline_id: str) -> str:
-        """
-        Get pipeline name by ID
-        Args:
-            pipeline_id: Pipeline identifier
-        Returns:
-            str: Pipeline name or empty string if not found
-        """
-        query = "SELECT name FROM pipelines WHERE id = ? AND is_active = 1"
-        results = self.db.execute_query(query, (pipeline_id,))
-        
-        return results[0]["name"] if results else ""

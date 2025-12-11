@@ -3,21 +3,21 @@
 Pipeline Manager - Central orchestrator for pipeline operations
 Manages pipeline lifecycle: creation, validation, execution, monitoring
 """
-
 import sys
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Union
 from domain.pipeline import PipelineConfig, PipelineStepConfig, PipelineRun, PipelineStatus, StepType
 from domain.document import Document
+from domain.chunk import Chunk
 from infrastructure.database.unified_db import UnifiedDatabase
 from infrastructure.database.config_service import ConfigService
 from infrastructure.database.script_manager import ScriptManager
 from infrastructure.database.logging_service import LoggingService, LogLevel
 from infrastructure.loaders.document_factory import DocumentFactory
+from infrastructure.security.script_sandbox import ScriptSandbox, ScriptSecurityValidator, SecurityError, ScriptExecutionError, ScriptExecutionTimeout
 from application.task_dispatcher import TaskDispatcher
 from application.error_recovery import ErrorRecoveryService
 from application.resource_monitor import ResourceMonitor
-from infrastructure.security.script_sandbox import ScriptSandbox, ScriptSecurityValidator, SecurityError, ScriptExecutionError, ScriptExecutionTimeout
 from datetime import datetime
 import json
 import secrets
@@ -38,6 +38,9 @@ class PipelineManager:
         self.task_dispatcher = TaskDispatcher(db)
         self.error_recovery = ErrorRecoveryService(db)
         self.resource_monitor = ResourceMonitor()
+        
+        # Track current pipeline ID
+        self.current_pipeline_id = None
         
         # Active pipeline runs
         self.active_runs: Dict[str, PipelineRun] = {}
@@ -74,8 +77,11 @@ class PipelineManager:
                     if security_errors:
                         raise SecurityError(f"Script security validation failed: {security_errors}")
         
-        # Save to database
+        # Save to database and get pipeline ID
         pipeline_id = self.config_service.save_pipeline_config(config)
+        
+        # Update config with the saved ID
+        config.id = pipeline_id
         
         # Log creation
         self.logging_service.log_message(
@@ -83,6 +89,9 @@ class PipelineManager:
             message=f"Pipeline created: {config.name} ({pipeline_id})",
             pipeline_id=pipeline_id
         )
+        
+        # Update current pipeline ID
+        self.current_pipeline_id = pipeline_id
         
         return pipeline_id
     
@@ -213,22 +222,30 @@ class PipelineManager:
             if not script_id:
                 errors.append(f"Script step {step.id} requires 'script_id' parameter")
             else:
-                # Check if script exists and is valid
+                # Check if script exists
                 script_data = self.script_manager.load_script(script_id)
                 if not script_data:
                     errors.append(f"Script not found: {script_id}")
         
         elif step.type == StepType.DOCUMENT_LOADER:
+            # Check for document paths
             source_path = step.params.get("source_path")
-            if not source_path:
-                errors.append(f"Document loader step {step.id} requires 'source_path' parameter")
-            elif not os.path.exists(source_path):
+            document_paths = step.params.get("document_paths")
+            
+            if not source_path and not document_paths:
+                errors.append(f"Document loader step {step.id} requires 'source_path' or 'document_paths' parameter")
+            elif source_path and not os.path.exists(source_path):
                 errors.append(f"Source path does not exist: {source_path}")
         
         elif step.type == StepType.DB_EXPORTER:
             table_name = step.params.get("table_name")
             if not table_name:
                 errors.append(f"DB exporter step {step.id} requires 'table_name' parameter")
+        
+        elif step.type == StepType.JSON_EXPORTER:
+            output_path = step.params.get("output_path")
+            if not output_path:
+                errors.append(f"JSON exporter step {step.id} requires 'output_path' parameter")
         
         return errors
     
@@ -239,7 +256,7 @@ class PipelineManager:
         Args:
             pipeline_id: Pipeline identifier
             document_paths: List of document file paths to process
-            run_metadata Additional metadata for the run
+            run_metadata: Additional metadata for the run
         Returns:
             str: Pipeline run ID
         Raises:
@@ -280,7 +297,7 @@ class PipelineManager:
             pipeline_id=pipeline_id,
             start_time=datetime.now(),
             status=PipelineStatus.RUNNING,
-            document_paths=valid_paths,
+            document_paths=valid_paths,  # ✅ FIXED: Correct parameter name
             metadata=run_metadata or {}
         )
         
@@ -290,7 +307,7 @@ class PipelineManager:
         
         try:
             # Execute pipeline steps
-            self._execute_pipeline_steps(run, config, valid_paths)
+            self._execute_pipeline_steps(config, valid_paths, run)
             
             # Update run status to completed
             run.end_time = datetime.now()
@@ -310,7 +327,7 @@ class PipelineManager:
                 "timestamp": datetime.now().isoformat(),
                 "error_type": type(e).__name__,
                 "error_message": str(e),
-                "stage": "execution"
+                "document_paths": valid_paths
             }]
             
             # Log failure
@@ -327,72 +344,112 @@ class PipelineManager:
                 if pipeline_id in self.active_runs:
                     del self.active_runs[pipeline_id]
     
-    def _execute_pipeline_steps(self, run: PipelineRun, config: PipelineConfig, document_paths: List[str]):
+    def _execute_pipeline_steps(self, config: PipelineConfig, document_paths: List[str], run: PipelineRun):
         """
-        Execute pipeline steps for given documents
+        Execute all steps in pipeline for documents
+        Args:
+            config: Pipeline configuration
+            document_paths: List of document paths to process
+            run: Pipeline run object for logging
         """
         # Initialize step results storage
         step_results = {}
         
-        # Execute each step in sequence
-        for step_config in config.steps:
-            step_start_time = datetime.now()
-            
+        # Process each document
+        for doc_path in document_paths:
             try:
-                # Get input for this step
-                input_data = self._get_step_input(step_config, step_results)
-                
-                # Execute step
-                output_data = self._execute_step(step_config, input_data, run)
-                
-                # Store results
-                step_results[step_config.id] = {
-                    "output": output_data,
-                    "execution_time": (datetime.now() - step_start_time).total_seconds()
-                }
-                
-                # Log step completion
-                self.logging_service.log_message(
-                    level=LogLevel.INFO,
-                    message=f"Step completed: {step_config.name}",
-                    pipeline_id=run.pipeline_id,
-                    pipeline_run_id=run.id,
-                    extra_data={
-                        "step_id": step_config.id,
-                        "execution_time": step_results[step_config.id]["execution_time"],
-                        "output_count": len(output_data) if isinstance(output_data, list) else 1
-                    }
-                )
-                
-            except Exception as e:
-                # Log step failure
-                error_msg = f"Step failed: {step_config.name} ({step_config.id}) - {str(e)}"
-                self.logging_service.log_message(
-                    level=LogLevel.ERROR,
-                    message=error_msg,
-                    pipeline_id=run.pipeline_id,
-                    pipeline_run_id=run.id,
-                    extra_data={
-                        "step_id": step_config.id,
-                        "error_type": type(e).__name__,
-                        "execution_time": (datetime.now() - step_start_time).total_seconds()
-                    }
-                )
-                
-                # Add to run errors
-                run.errors.append({
-                    "timestamp": datetime.now().isoformat(),
-                    "step_id": step_config.id,
-                    "error_type": type(e).__name__,
-                    "error_message": str(e),
-                    "stage": f"step_{step_config.name}"
+                # Load document
+                loader = DocumentFactory.create_loader(doc_path)
+                document = loader.load({
+                    "path": doc_path,
+                    "style_config_path": config.source_config.get("style_config_path")
                 })
                 
-                # If step is critical (not optional), stop pipeline
-                if not step_config.params.get("optional", False):
-                    raise
+                # Execute each step in sequence for this document
+                for step_config in config.steps:
+                    step_start_time = time.time()
+                    
+                    try:
+                        # Get input for this step
+                        input_data = self._get_step_input(step_config, step_results, document)
+                        
+                        # Execute step
+                        output_data = self._execute_step(step_config, input_data, document, run)
+                        
+                        # Store results
+                        step_results[step_config.id] = {
+                            "output": output_data,
+                            "execution_time": time.time() - step_start_time
+                        }
+                        
+                        # Log step completion
+                        self.logging_service.log_message(
+                            level=LogLevel.INFO,
+                            message=f"Step completed: {step_config.name}",
+                            pipeline_id=run.pipeline_id,
+                            pipeline_run_id=run.id,
+                            extra_data={
+                                "step_id": step_config.id,
+                                "execution_time": step_results[step_config.id]["execution_time"],
+                                "output_count": len(output_data) if isinstance(output_data, list) else 1
+                            }
+                        )
+                        
+                        # If this is an output step (like DB exporter), collect results
+                        if step_config.type in [StepType.DB_EXPORTER, StepType.FILE_EXPORTER, StepType.JSON_EXPORTER]:
+                            if isinstance(output_data, list):
+                                # Process output data (this would be handled by the exporter)
+                                pass
+                            elif output_data is not None:
+                                # Process single output
+                                pass
+                    
+                    except Exception as e:
+                        # Log step failure
+                        error_msg = f"Step failed: {step_config.name} ({step_config.id}) - {str(e)}"
+                        self.logging_service.log_message(
+                            level=LogLevel.ERROR,
+                            message=error_msg,
+                            pipeline_id=run.pipeline_id,
+                            pipeline_run_id=run.id,
+                            extra_data={
+                                "step_id": step_config.id,
+                                "error_type": type(e).__name__,
+                                "execution_time": time.time() - step_start_time
+                            }
+                        )
+                        
+                        # Add to run errors
+                        run.errors.append({
+                            "timestamp": datetime.now().isoformat(),
+                            "step_id": step_config.id,
+                            "error_type": type(e).__name__,
+                            "error_message": str(e),
+                            "stage": f"step_{step_config.name}"
+                        })
+                        
+                        # If step is critical (not optional), stop pipeline
+                        if not step_config.params.get("optional", False):
+                            raise
+                
+                # Update run progress
+                run.processed_count += 1
+                run.success_count += 1
+                
+            except Exception as e:
+                # Document-level error
+                run.processed_count += 1
+                run.error_count += 1
+                run.errors.append({
+                    "timestamp": datetime.now().isoformat(),
+                    "document_path": doc_path,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "stage": "document_loading"
+                })
     
-    def _get_step_input(self, step_config: PipelineStepConfig, step_results: Dict[str, Any]):
+    def _get_step_input(self, step_config: PipelineStepConfig, step_results: Dict[str, Any], 
+                       document: Document):
         """
         Get input data for step based on configuration
         """
@@ -402,154 +459,238 @@ class PipelineManager:
             if prev_result:
                 return prev_result["output"]
         
-        # For initial steps, input comes from document paths
+        # For initial steps, input comes from document
         if step_config.type == StepType.DOCUMENT_LOADER:
-            return step_config.params.get("document_paths", [])
+            return document
         
-        # For other steps without explicit input, return empty
-        return []
+        # For other steps without explicit input, return document or empty
+        return document
     
-    def _execute_step(self, step_config: PipelineStepConfig, input_data, run: PipelineRun):
+    def _execute_step(self, step_config: PipelineStepConfig, input_data, document: Document, run: PipelineRun):
         """
         Execute individual pipeline step
         """
         if step_config.type == StepType.DOCUMENT_LOADER:
-            return self._execute_document_loader_step(step_config, input_data, run)
+            return self._execute_document_loader_step(step_config, input_data, document, run)
         
         elif step_config.type == StepType.USER_SCRIPT:
-            return self._execute_script_step(step_config, input_data, run)
+            return self._execute_script_step(step_config, input_data, document, run)
         
         elif step_config.type == StepType.LINE_SPLITTER:
-            return self._execute_line_splitter_step(step_config, input_data, run)
+            return self._execute_line_splitter_step(step_config, input_data, document, run)
         
         elif step_config.type == StepType.DELIMITER_SPLITTER:
-            return self._execute_delimiter_splitter_step(step_config, input_data, run)
+            return self._execute_delimiter_splitter_step(step_config, input_data, document, run)
+        
+        elif step_config.type == StepType.PARAGRAPH_SPLITTER:
+            return self._execute_paragraph_splitter_step(step_config, input_data, document, run)
+        
+        elif step_config.type == StepType.SENTENCE_SPLITTER:
+            return self._execute_sentence_splitter_step(step_config, input_data, document, run)
+        
+        elif step_config.type == StepType.REGEX_EXTRACTOR:
+            return self._execute_regex_extractor_step(step_config, input_data, document, run)
         
         elif step_config.type == StepType.DB_EXPORTER:
-            return self._execute_db_exporter_step(step_config, input_data, run)
+            return self._execute_db_exporter_step(step_config, input_data, document, run)
+        
+        elif step_config.type == StepType.FILE_EXPORTER:
+            return self._execute_file_exporter_step(step_config, input_data, document, run)
+        
+        elif step_config.type == StepType.JSON_EXPORTER:
+            return self._execute_json_exporter_step(step_config, input_data, document, run)
+        
+        elif step_config.type == StepType.METADATA_PROPAGATOR:
+            return self._execute_metadata_propagator_step(step_config, input_data, document, run)
         
         else:
             # Use generic processor for other step types
             processor = self._get_step_processor(step_config.type)
             return processor.process(input_data, step_config.params)
     
-    def _execute_document_loader_step(self, step_config: PipelineStepConfig, document_paths: List[str], run: PipelineRun):
+    def _execute_document_loader_step(self, step_config: PipelineStepConfig, input_data, document: Document, run: PipelineRun):
         """
-        Execute document loader step
+        Execute document loader step (usually the first step)
         """
-        loaded_documents = []
+        # Input is already the loaded document
+        return document
     
-        for path in document_paths:
-            try:
-                # Use the DocumentFactory to create loader (fixed import)
-                from infrastructure.loaders.document_factory import DocumentFactory
-                loader = DocumentFactory.create_loader(path)  # ← This method now exists!
-            
-                # Load document
-                doc = loader.load({
-                    "path": path,
-                    "style_config_path": step_config.params.get("style_config_path")
-                })
-                loaded_documents.append(doc)
-            
-                # Update run progress
-                run.processed_count += 1
-                run.success_count += 1
-            
-            except Exception as e:
-                run.processed_count += 1
-                run.error_count += 1
-                run.errors.append({
-                    "timestamp": datetime.now().isoformat(),
-                    "document_path": path,
-                    "error_type": type(e).__name__,
-                    "error_message": str(e),
-                    "stage": "document_loading"
-                })
-    
-        return loaded_documents
-    
-    def _execute_script_step(self, step_config: PipelineStepConfig, input_data, run: PipelineRun):
+    def _execute_script_step(self, step_config: PipelineStepConfig, input_data, document: Document, run: PipelineRun):
         """
-        Execute user script step
+        Execute user script step with security sandbox
         """
         script_id = step_config.params.get("script_id")
         if not script_id:
             raise ValueError("Script step requires 'script_id' parameter")
         
-        # Load and execute script for each input item
-        results = []
+        # Create execution context
+        context = {
+            "input": input_data,
+            "document": document,
+            "pipeline_run": run,
+            "step_config": step_config,
+            "metadata": {
+                "document_id": document.id,
+                "pipeline_id": run.pipeline_id,
+                "run_id": run.id
+            }
+        }
         
-        for item in input_data:
-            try:
-                context = {
-                    "input": item,
-                    "pipeline_run": run,
-                    "step_config": step_config
-                }
-                
-                result = self.script_manager.validate_and_execute_script(script_id, context)
-                results.append(result)
-                
-            except Exception as e:
-                run.error_count += 1
-                run.errors.append({
-                    "timestamp": datetime.now().isoformat(),
-                    "error_type": type(e).__name__,
-                    "error_message": str(e),
-                    "stage": f"script_execution_{script_id}",
-                    "input_item": str(item)[:100]  # First 100 chars of input
-                })
-        
-        return results
+        # Execute script in secure sandbox
+        result = self.script_manager.validate_and_execute_script(script_id, context)
+        return result
     
-    def _execute_line_splitter_step(self, step_config: PipelineStepConfig, input_data, run: PipelineRun):
+    def _execute_line_splitter_step(self, step_config: PipelineStepConfig, input_data, document: Document, run: PipelineRun):
         """
         Execute line splitter step
         """
         from infrastructure.processors.line_splitter import LineSplitter
         splitter = LineSplitter()
         
-        results = []
-        for item in input_data:
-            try:
-                split_results = splitter.process(item, step_config.params)
-                results.extend(split_results)
-            except Exception as e:
-                run.error_count += 1
-                run.errors.append({
-                    "timestamp": datetime.now().isoformat(),
-                    "error_type": type(e).__name__,
-                    "error_message": str(e),
-                    "stage": "line_splitting"
-                })
-        
-        return results
+        if isinstance(input_data, Document):
+            # Process document pages
+            all_chunks = []
+            for page in input_data.pages:
+                chunks = splitter.process(page.raw_text, step_config.params)
+                # Propagate metadata
+                for chunk in chunks:
+                    chunk.meta.document_id = document.id
+                    chunk.meta.page_num = page.number
+                all_chunks.extend(chunks)
+            return all_chunks
+        elif isinstance(input_data, list):
+            # Process list of chunks
+            all_chunks = []
+            for item in input_data:
+                if hasattr(item, 'text'):  # It's a chunk
+                    chunks = splitter.process(item, step_config.params)
+                    all_chunks.extend(chunks)
+                else:  # It's raw text
+                    chunks = splitter.process(item, step_config.params)
+                    all_chunks.extend(chunks)
+            return all_chunks
+        else:
+            # Process single item
+            return splitter.process(input_data, step_config.params)
     
-    def _execute_delimiter_splitter_step(self, step_config: PipelineStepConfig, input_data, run: PipelineRun):
+    def _execute_delimiter_splitter_step(self, step_config: PipelineStepConfig, input_data, document: Document, run: PipelineRun):
         """
         Execute delimiter splitter step
         """
         from infrastructure.processors.delimiter_splitter import DelimiterSplitter
         splitter = DelimiterSplitter()
         
-        results = []
-        for item in input_data:
-            try:
-                split_results = splitter.process(item, step_config.params)
-                results.extend(split_results)
-            except Exception as e:
-                run.error_count += 1
-                run.errors.append({
-                    "timestamp": datetime.now().isoformat(),
-                    "error_type": type(e).__name__,
-                    "error_message": str(e),
-                    "stage": "delimiter_splitting"
-                })
-        
-        return results
+        # Similar logic to line splitter
+        if isinstance(input_data, Document):
+            all_chunks = []
+            for page in input_data.pages:
+                chunks = splitter.process(page.raw_text, step_config.params)
+                for chunk in chunks:
+                    chunk.meta.document_id = document.id
+                    chunk.meta.page_num = page.number
+                all_chunks.extend(chunks)
+            return all_chunks
+        elif isinstance(input_data, list):
+            all_chunks = []
+            for item in input_data:
+                if hasattr(item, 'text'):
+                    chunks = splitter.process(item, step_config.params)
+                    all_chunks.extend(chunks)
+                else:
+                    chunks = splitter.process(item, step_config.params)
+                    all_chunks.extend(chunks)
+            return all_chunks
+        else:
+            return splitter.process(input_data, step_config.params)
     
-    def _execute_db_exporter_step(self, step_config: PipelineStepConfig, input_data, run: PipelineRun):
+    def _execute_paragraph_splitter_step(self, step_config: PipelineStepConfig, input_data, document: Document, run: PipelineRun):
+        """
+        Execute paragraph splitter step
+        """
+        from infrastructure.processors.paragraph_splitter import ParagraphSplitter
+        splitter = ParagraphSplitter()
+        
+        if isinstance(input_data, Document):
+            all_chunks = []
+            for page in input_data.pages:
+                chunks = splitter.process(page.raw_text, step_config.params)
+                for chunk in chunks:
+                    chunk.meta.document_id = document.id
+                    chunk.meta.page_num = page.number
+                all_chunks.extend(chunks)
+            return all_chunks
+        elif isinstance(input_data, list):
+            all_chunks = []
+            for item in input_data:
+                if hasattr(item, 'text'):
+                    chunks = splitter.process(item, step_config.params)
+                    all_chunks.extend(chunks)
+                else:
+                    chunks = splitter.process(item, step_config.params)
+                    all_chunks.extend(chunks)
+            return all_chunks
+        else:
+            return splitter.process(input_data, step_config.params)
+    
+    def _execute_sentence_splitter_step(self, step_config: PipelineStepConfig, input_data, document: Document, run: PipelineRun):
+        """
+        Execute sentence splitter step
+        """
+        from infrastructure.processors.sentence_splitter import SentenceSplitter
+        splitter = SentenceSplitter()
+        
+        if isinstance(input_data, Document):
+            all_chunks = []
+            for page in input_data.pages:
+                chunks = splitter.process(page.raw_text, step_config.params)
+                for chunk in chunks:
+                    chunk.meta.document_id = document.id
+                    chunk.meta.page_num = page.number
+                all_chunks.extend(chunks)
+            return all_chunks
+        elif isinstance(input_data, list):
+            all_chunks = []
+            for item in input_data:
+                if hasattr(item, 'text'):
+                    chunks = splitter.process(item, step_config.params)
+                    all_chunks.extend(chunks)
+                else:
+                    chunks = splitter.process(item, step_config.params)
+                    all_chunks.extend(chunks)
+            return all_chunks
+        else:
+            return splitter.process(input_data, step_config.params)
+    
+    def _execute_regex_extractor_step(self, step_config: PipelineStepConfig, input_data, document: Document, run: PipelineRun):
+        """
+        Execute regex extractor step
+        """
+        from infrastructure.processors.regex_extractor import RegexExtractor
+        extractor = RegexExtractor()
+        
+        if isinstance(input_data, Document):
+            all_chunks = []
+            for page in input_data.pages:
+                chunks = extractor.process(page.raw_text, step_config.params)
+                for chunk in chunks:
+                    chunk.meta.document_id = document.id
+                    chunk.meta.page_num = page.number
+                all_chunks.extend(chunks)
+            return all_chunks
+        elif isinstance(input_data, list):
+            all_chunks = []
+            for item in input_data:
+                if hasattr(item, 'text'):
+                    chunks = extractor.process(item, step_config.params)
+                    all_chunks.extend(chunks)
+                else:
+                    chunks = extractor.process(item, step_config.params)
+                    all_chunks.extend(chunks)
+            return all_chunks
+        else:
+            return extractor.process(input_data, step_config.params)
+    
+    def _execute_db_exporter_step(self, step_config: PipelineStepConfig, input_data, document: Document, run: PipelineRun):
         """
         Execute database exporter step
         """
@@ -557,7 +698,7 @@ class PipelineManager:
         exporter = TargetDbExporter()
         
         try:
-            # Connect to database
+            # Get database configuration
             db_config = step_config.params.get("db_config", {})
             exporter.connect(db_config)
             
@@ -568,6 +709,7 @@ class PipelineManager:
             else:
                 exporter.batch_insert([input_data], table_name)
             
+            # Close connection
             exporter.close()
             
         except Exception as e:
@@ -580,7 +722,88 @@ class PipelineManager:
             })
             raise
         
-        return input_data  # Return original data (exporter doesn't transform)
+        # Return original data (exporter doesn't transform)
+        return input_data
+    
+    def _execute_file_exporter_step(self, step_config: PipelineStepConfig, input_data, document: Document, run: PipelineRun):
+        """
+        Execute file exporter step
+        """
+        from infrastructure.exporters.file_exporter import FileExporter
+        exporter = FileExporter()
+        
+        try:
+            # Get file configuration
+            file_config = step_config.params.get("file_config", {})
+            output_format = step_config.params.get("output_format", "json")
+            output_path = step_config.params.get("output_path", "./output")
+            file_name = step_config.params.get("file_name", f"chunks_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+            compress = step_config.params.get("compress", False)
+            
+            if isinstance(input_data, list):
+                exporter.export_to_file(input_data, output_format, output_path, file_name, compress)
+            else:
+                exporter.export_to_file([input_data], output_format, output_path, file_name, compress)
+                
+        except Exception as e:
+            run.error_count += 1
+            run.errors.append({
+                "timestamp": datetime.now().isoformat(),
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "stage": "file_export"
+            })
+            raise
+        
+        # Return original data (exporter doesn't transform)
+        return input_data
+    
+    def _execute_json_exporter_step(self, step_config: PipelineStepConfig, input_data, document: Document, run: PipelineRun):
+        """
+        Execute JSON exporter step
+        """
+        from infrastructure.exporters.json_exporter import JsonExporter
+        exporter = JsonExporter()
+        
+        try:
+            # Get JSON configuration
+            output_path = step_config.params.get("output_path", "./output")
+            file_name = step_config.params.get("file_name", f"chunks_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+            pretty_print = step_config.params.get("pretty_print", True)
+            include_metadata = step_config.params.get("include_metadata", True)
+            
+            if isinstance(input_data, list):
+                exporter.export_to_json(input_data, output_path, file_name, pretty_print, include_metadata)
+            else:
+                exporter.export_to_json([input_data], output_path, file_name, pretty_print, include_metadata)
+                
+        except Exception as e:
+            run.error_count += 1
+            run.errors.append({
+                "timestamp": datetime.now().isoformat(),
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "stage": "json_export"
+            })
+            raise
+        
+        # Return original data (exporter doesn't transform)
+        return input_data
+    
+    def _execute_metadata_propagator_step(self, step_config: PipelineStepConfig, input_data, document: Document, run: PipelineRun):
+        """
+        Execute metadata propagator step
+        """
+        from infrastructure.processors.metadata_propagator import MetadataPropagator
+        propagator = MetadataPropagator()
+        
+        # Propagate metadata from parent context to ensure all chunks have proper context
+        if isinstance(input_data, list):
+            return propagator.propagate_from_parent(input_data[0] if input_data else None, input_data)
+        elif input_data is not None:
+            return [propagator.propagate_from_parent(input_data, [input_data])]
+        else:
+            return []  # Return empty if no input
     
     def _get_step_processor(self, step_type: StepType):
         """
@@ -711,9 +934,10 @@ class PipelineManager:
                     type=StepType.DOCUMENT_LOADER,
                     name="Load Documents",
                     params={
-                        "source_path": "",  # Will be filled during execution
+                        "document_paths": [],  # ✅ FIXED: Use correct parameter name
                         "style_config_path": "",
-                        "batch_size": 100
+                        "batch_size": 100,
+                        "parallel_workers": 4
                     }
                 ),
                 PipelineStepConfig(
